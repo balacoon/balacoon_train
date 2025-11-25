@@ -3,6 +3,7 @@ Copyright 2022 Balacoon
 
 Configuration storage based on omegaconf
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,9 +23,7 @@ class IsDataClass(Protocol):
     __dataclass_fields__: Dict
 
 
-AttributeType = Union[
-    str, int
-]  # the attribute is typically a string, but could be an index
+AttributeType = Union[str, int]  # the attribute is typically a string, but could be an index
 
 
 class Config(object):
@@ -261,9 +260,7 @@ class Config(object):
         new_omega = OmegaConf.from_dotlist(prefix_dot_list)
         # merge new omega with current omega, overwriting or setting values
         new_omega_dict = OmegaConf.to_container(new_omega, resolve=True)
-        assert isinstance(
-            new_omega_dict, dict
-        ), "config created from dot_list is not a dict!"
+        assert isinstance(new_omega_dict, dict), "config created from dot_list is not a dict!"
         for key, val in new_omega_dict.items():
             OmegaConf.update(
                 cast(DictConfig, self._omega),
@@ -307,18 +304,12 @@ class Config(object):
         """
         subconf = self._get_attr_omega()
         # 1. in the config created from data class, update values that are present in current config
-        other_conf = OmegaConf.merge(
-            OmegaConf.to_container(other_conf, resolve=True), subconf
-        )
+        other_conf = OmegaConf.merge(OmegaConf.to_container(other_conf, resolve=True), subconf)
         # 2. now set all the values from other_conf into current conf, if they are not there already
         other_conf_dict = OmegaConf.to_container(other_conf, resolve=True)
-        assert isinstance(
-            other_conf_dict, dict
-        ), "config created from data class is not a dict!"
+        assert isinstance(other_conf_dict, dict), "config created from data class is not a dict!"
         for key, val in other_conf_dict.items():
-            OmegaConf.update(
-                cast(DictConfig, subconf), str(key), val, force_add=True, merge=False
-            )
+            OmegaConf.update(cast(DictConfig, subconf), str(key), val, force_add=True, merge=False)
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -389,9 +380,9 @@ class Config(object):
         for i, element in enumerate(subconf):
             if not element:
                 continue
-            assert (
-                "cls" in element
-            ), "{} doesn't contain `cls` field, can't look up".format(str(element))
+            assert "cls" in element, "{} doesn't contain `cls` field, can't look up".format(
+                str(element)
+            )
             if element.cls.endswith(cls):
                 if not name:
                     return i
@@ -406,7 +397,9 @@ class ConfigurableConfig:
     Base configuration that should be inherited by all the configs of configurable objects
     """
 
-    cls: str = "???"  # full class name to create it, usually `ClassName.__module__ + "." + ClassName.__name__`
+    cls: str = (
+        "???"  # full class name to create it, usually `ClassName.__module__ + "." + ClassName.__name__`
+    )
 
 
 def _get_class(full_class_name: str) -> Callable:
@@ -429,9 +422,7 @@ def _get_class(full_class_name: str) -> Callable:
         module = import_module(module_path)
         return getattr(module, class_name)
     except (ImportError, AttributeError):
-        raise ImportError(
-            "Failed to find {} specified in config".format(full_class_name)
-        )
+        raise ImportError("Failed to find {} specified in config".format(full_class_name))
 
 
 def create_configurable(config: Config, **kwargs: Dict[str, Any]) -> Configurable:
@@ -439,8 +430,6 @@ def create_configurable(config: Config, **kwargs: Dict[str, Any]) -> Configurabl
     Creates a configurable object out of config. Relies on `cls` field in config which
     specifies full name of the class, so it can be instantiated.
     """
-    assert (
-        "cls" in config
-    ), "Can't create object from config, it is not `ConfigurableObjectConfig`"
+    assert "cls" in config, "Can't create object from config, it is not `ConfigurableObjectConfig`"
     obj = _get_class(config.cls)(config, **kwargs)
     return obj

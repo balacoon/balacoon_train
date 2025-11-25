@@ -74,13 +74,9 @@ class Dataset(torch.utils.data.Dataset):
         self._loaders: List[Loader] = [
             cast(Loader, create_configurable(c)) for c in self._config.loaders if c
         ]
-        assert (
-            len(self._loaders) > 0
-        ), "No loaders where created in dataset, check config"
+        assert len(self._loaders) > 0, "No loaders where created in dataset, check config"
         self._processors: List[Processor] = [
-            cast(Processor, create_configurable(c))
-            for c in self._config.processors
-            if c
+            cast(Processor, create_configurable(c)) for c in self._config.processors if c
         ]
 
         # propagate utterance ids to loaders/processors that need them

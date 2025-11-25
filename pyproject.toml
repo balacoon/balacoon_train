@@ -2,3 +2,5 @@
 requires = ["setuptools", "wheel", "Cython", "numpy"]
 build-backend = "setuptools.build_meta"
 
+[tool.black]
+line-length = 100

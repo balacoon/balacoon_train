@@ -21,7 +21,9 @@ from balacoon_train.data.processors.vc_ops import resample_phonemes, resample_pi
 
 
 PITCH_ACOUSTIC_RATIO = 100 / 21.5  # ratio between pitch frame rate and acoustic tokens frame rate
-PHONEME_ACOUSTIC_RATIO = 50 / 21.5  # ratio between phoneme frame rate and acoustic tokens frame rate
+PHONEME_ACOUSTIC_RATIO = (
+    50 / 21.5
+)  # ratio between phoneme frame rate and acoustic tokens frame rate
 
 
 class VCTrainProcessor(Processor):
@@ -36,13 +38,19 @@ class VCTrainProcessor(Processor):
         """
         if validate:
             # check that all input streams are actually in the container
-            if any(stream not in container for stream in [self._config.name, self._config.text_name, self._config.pitch_name]):
+            if any(
+                stream not in container
+                for stream in [self._config.name, self._config.text_name, self._config.pitch_name]
+            ):
                 return False
-        
+
         phonemes = container[self._config.text_name]  # frames
         pitch = container[self._config.pitch_name]  # frames
         acoustic_tokens = container[self._config.name]  # frames x vocabs
-        print(f">>> train processor. phonemes: {phonemes.shape}, pitch: {pitch.shape}, acoustic_tokens: {acoustic_tokens.shape}, for {self._config.text_name}, {self._config.pitch_name}, {self._config.name}", flush=True)
+        print(
+            f">>> train processor. phonemes: {phonemes.shape}, pitch: {pitch.shape}, acoustic_tokens: {acoustic_tokens.shape}, for {self._config.text_name}, {self._config.pitch_name}, {self._config.name}",
+            flush=True,
+        )
 
         # check that the ratio between rates is as expected
         expected_len = acoustic_tokens.shape[0]
@@ -50,26 +58,37 @@ class VCTrainProcessor(Processor):
             if abs(pitch.shape[0] / float(expected_len) - PITCH_ACOUSTIC_RATIO) > 0.2:
                 # log the mismatch between shapes of pitch and acoustic tokens
                 logging.warning(
-                    "Mismatch between shapes of pitch and acoustic tokens: {} vs {}".format(pitch.shape[0], expected_len)
+                    "Mismatch between shapes of pitch and acoustic tokens: {} vs {}".format(
+                        pitch.shape[0], expected_len
+                    )
                 )
                 return False
             if abs(phonemes.shape[0] / float(expected_len) - PHONEME_ACOUSTIC_RATIO) > 0.2:
                 logging.warning(
-                    "Mismatch between shapes of phonemes and acoustic tokens: {} vs {}".format(phonemes.shape[0], expected_len)
+                    "Mismatch between shapes of phonemes and acoustic tokens: {} vs {}".format(
+                        phonemes.shape[0], expected_len
+                    )
                 )
                 return False
             # nothing else to do during validation
             # TODO: maybe make sure pitch and phonemes are same size,
             # if there are subsequent processors
             return True
-        
+
         # align phonemes and pitch to the same length as acoustic tokens
         # This ensures that for every acoustic token we have a corresponding phoneme and pitch value,
         # which are used as conditions in the model.
-        print(f">>> train processor. change phoneme shape from {phonemes.shape} to {expected_len}", flush=True)
-        phonemes = torch.from_numpy(resample_phonemes(phonemes.numpy().astype(np.int32), expected_len))
-        pitch = torch.from_numpy(resample_pitch(pitch.numpy().astype(np.float32), expected_len)).int()
-        
+        print(
+            f">>> train processor. change phoneme shape from {phonemes.shape} to {expected_len}",
+            flush=True,
+        )
+        phonemes = torch.from_numpy(
+            resample_phonemes(phonemes.numpy().astype(np.int32), expected_len)
+        )
+        pitch = torch.from_numpy(
+            resample_pitch(pitch.numpy().astype(np.float32), expected_len)
+        ).int()
+
         # verify that resampling worked
         assert phonemes.shape[0] == expected_len and pitch.shape[0] == expected_len
 
@@ -80,7 +99,9 @@ class VCTrainProcessor(Processor):
         return True
 
     def shift_pitch(self, pitch: torch.Tensor) -> torch.Tensor:
-        return torch.clip(pitch + self._config.pitch_val_shift, min=0, max=self._config.pitch_val_shift * 2 - 1)
+        return torch.clip(
+            pitch + self._config.pitch_val_shift, min=0, max=self._config.pitch_val_shift * 2 - 1
+        )
 
     def collate(self, batch_elements: list[Container], batch: Container):
         """

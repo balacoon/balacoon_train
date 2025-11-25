@@ -28,7 +28,7 @@ from balacoon_train.data.container import Container
 class ALMModel(LightningModule):
     """
     Acoustic Language Model using Llama3 architecture.
-    
+
     Components:
     - Non-causal Llama3 encoder (100M params): encodes text tokens
     - Causal Llama3 decoder (300M params): takes acoustic tokens, adds encoder embeddings,
@@ -76,23 +76,25 @@ class ALMModel(LightningModule):
             rms_norm_eps=1e-6,
             use_cache=True,
         )
-        
+
         # Initialize encoder (non-causal, bidirectional attention)
         self.encoder = LlamaModel(encoder_config)
         self.encoder.config.use_cache = False
-        
+
         # Initialize decoder (causal)
         self.decoder = LlamaForCausalLM(decoder_config)
-        
+
         # Acoustic token embedding (separate from decoder's embedding)
-        self.acoustic_embedding = nn.ModuleList([
-            nn.Embedding(self.config.dec_vocab_size, self.config.dec_dim)
-            for _ in range(self.config.dec_vocabs_num)
-        ])
-        
+        self.acoustic_embedding = nn.ModuleList(
+            [
+                nn.Embedding(self.config.dec_vocab_size, self.config.dec_dim)
+                for _ in range(self.config.dec_vocabs_num)
+            ]
+        )
+
         # Projection layer to combine encoder and acoustic embeddings
         self.text_projection = nn.Linear(self.config.enc_dim, self.config.dec_dim)
-        
+
         # Output projection for multi-token prediction
         self.acoustic_projection = nn.Linear(
             self.config.dec_dim, self.config.dec_vocab_size * self.config.dec_vocabs_num
@@ -138,17 +140,17 @@ class ALMModel(LightningModule):
             # Create mask [B, L]
             idx = torch.arange(seq_len, device=device).expand(batch_size, seq_len)
             sequence_lens_mask = (idx < sequence_lens.unsqueeze(1)).long()
-        
+
         # Create bidirectional mask: [batch_size, num_heads, seq_len, seq_len]
         bidirectional_mask = sequence_lens_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, L]
         bidirectional_mask = bidirectional_mask.expand(batch_size, 1, seq_len, seq_len)
-        
+
         encoder_attention_mask = torch.where(
             bidirectional_mask.bool(),
             torch.zeros_like(bidirectional_mask, dtype=torch.float),
-            torch.full_like(bidirectional_mask, float('-inf'), dtype=torch.float)
+            torch.full_like(bidirectional_mask, float("-inf"), dtype=torch.float),
         )
-        
+
         text_embeds = self.phonemes_embedding(text_tokens) + self.pitch_embedding(pitch)
         encoder_outputs = self.encoder(
             inputs_embeds=text_embeds,
@@ -156,12 +158,12 @@ class ALMModel(LightningModule):
             return_dict=True,
         )
         encoder_hidden_states = encoder_outputs.last_hidden_state
-        
+
         # Project encoder hidden states
         encoder_projected = self.text_projection(encoder_hidden_states)
-        
+
         # Training/inference with acoustic tokens
-        
+
         # Embed acoustic tokens
         # acoustic_tokens shape: [batch, acoustic_seq_len, vocabs_num]
         # Embed each vocabulary separately and sum
@@ -169,11 +171,13 @@ class ALMModel(LightningModule):
         for i, emb in enumerate(self.acoustic_embedding):
             acoustic_embeds_list.append(emb(acoustic_tokens[:, :, i]))
         acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(dim=2)
-        
+
         # Add encoder embeddings to acoustic embeddings
-        assert encoder_projected.size(1) == acoustic_seq_len, f"encoded {encoder_projected.size(1)} != acoustic {acoustic_seq_len}"
+        assert (
+            encoder_projected.size(1) == acoustic_seq_len
+        ), f"encoded {encoder_projected.size(1)} != acoustic {acoustic_seq_len}"
         combined_embeds = acoustic_embeds + encoder_projected
-        
+
         # Pass through decoder
         decoder_outputs = self.decoder.model(
             inputs_embeds=combined_embeds,
@@ -181,18 +185,15 @@ class ALMModel(LightningModule):
             return_dict=True,
         )
         decoder_hidden_states = decoder_outputs.last_hidden_state
-        
+
         # Project to output logits
         logits = self.acoustic_projection(decoder_hidden_states)
         logits = logits.view(
             batch_size, acoustic_seq_len, self.config.dec_vocabs_num, self.config.dec_vocab_size
         )
-        
-        output = {
-            "logits": logits,
-            "encoder_hidden_states": encoder_hidden_states
-        }
-            
+
+        output = {"logits": logits, "encoder_hidden_states": encoder_hidden_states}
+
         return output
 
     @torch.no_grad()
@@ -202,7 +203,7 @@ class ALMModel(LightningModule):
     ) -> torch.Tensor:
         """
         Autoregressive generation of acoustic tokens.
-        
+
         Parameters
         ----------
         batch: Container
@@ -210,7 +211,7 @@ class ALMModel(LightningModule):
             - text_tokens: [batch, total_seq_len]
             - pitch: [batch, total_seq_len]
             - ref_acoustic_tokens: [batch, prompt_len, vocabs_num]
-            
+
         Returns
         -------
         generated_tokens: torch.Tensor
@@ -234,7 +235,7 @@ class ALMModel(LightningModule):
 
         batch_size, total_len = text_tokens.shape
         prompt_len = acoustic_prompt.shape[1]
-        
+
         # 1. Encode full text once
         text_sequence_lens = cast(torch.Tensor, batch["phoneme_len"])
         # Create mask [B, L]
@@ -245,7 +246,7 @@ class ALMModel(LightningModule):
         encoder_attention_mask = torch.where(
             bidirectional_mask.bool(),
             torch.zeros_like(bidirectional_mask, dtype=torch.float),
-            torch.full_like(bidirectional_mask, float('-inf'), dtype=torch.float)
+            torch.full_like(bidirectional_mask, float("-inf"), dtype=torch.float),
         )
         text_embeds = self.phonemes_embedding(text_tokens) + self.pitch_embedding(pitch)
         encoder_outputs = self.encoder(
@@ -255,25 +256,27 @@ class ALMModel(LightningModule):
         )
         # [batch, total_len, dec_dim]
         text_embeddings = self.text_projection(encoder_outputs.last_hidden_state)
-        
+
         # 2. Setup generation
         generated = acoustic_prompt.clone()  # [batch, prompt_len, vocabs_num]
         past_key_values = None
-        
+
         # 3. Prefill prompt
         # We feed the prompt. The last token of prompt + aligned text predicts the first new token.
         # Embed prompt
         acoustic_embeds_list = []
         for i, emb in enumerate(self.acoustic_embedding):
             acoustic_embeds_list.append(emb(acoustic_prompt[:, :, i]))
-        acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(dim=2) # [B, prompt_len, dec_dim]
-        
+        acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(
+            dim=2
+        )  # [B, prompt_len, dec_dim]
+
         # Align text embeddings: use corresponding slice
         current_text_embeds = text_embeddings[:, :prompt_len, :]
-        
+
         # Combine
         inputs_embeds = acoustic_embeds + current_text_embeds
-        
+
         # Forward prompt
         outputs = self.decoder.model(
             inputs_embeds=inputs_embeds,
@@ -281,44 +284,48 @@ class ALMModel(LightningModule):
             use_cache=True,
         )
         past_key_values = outputs.past_key_values
-        last_hidden = outputs.last_hidden_state[:, -1:, :] # [B, 1, hidden]
-        
+        last_hidden = outputs.last_hidden_state[:, -1:, :]  # [B, 1, hidden]
+
         # 4. Autoregressive loop
         # We start generating from index `prompt_len` up to `total_len`
         print(f">>> generating from {prompt_len} to {total_len}", flush=True)
         for i in range(prompt_len, total_len):
             # Project to logits
-            logits = self.acoustic_projection(last_hidden) # [B, 1, num_vocabs * vocab_size]
-            logits = logits.view(batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size)
-            
+            logits = self.acoustic_projection(last_hidden)  # [B, 1, num_vocabs * vocab_size]
+            logits = logits.view(
+                batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size
+            )
+
             # Sample next token (all codebooks in parallel)
             next_tokens = []
             for v in range(self.config.dec_vocabs_num):
                 v_logits = logits[:, 0, v, :]  # batch x vocab_size
                 v_logits = logits_processor(generated[:, :, v], v_logits)
                 probs = F.softmax(v_logits, dim=-1)
-                token = torch.multinomial(probs, num_samples=1) # [B, 1]
+                token = torch.multinomial(probs, num_samples=1)  # [B, 1]
                 next_tokens.append(token)
-            
-            next_acoustic_token = torch.cat(next_tokens, dim=1).unsqueeze(1) # [B, 1, vocabs_num]
-            
+
+            next_acoustic_token = torch.cat(next_tokens, dim=1).unsqueeze(1)  # [B, 1, vocabs_num]
+
             # Append to result
             generated = torch.cat([generated, next_acoustic_token], dim=1)
-            
+
             # Prepare input for next step
             # Next input is: newly generated token + text embedding at current pos `i`
-            
+
             # Embed new acoustic token
             next_acoustic_embeds_list = []
             for v_idx, emb in enumerate(self.acoustic_embedding):
                 next_acoustic_embeds_list.append(emb(next_acoustic_token[:, :, v_idx]))
-            next_acoustic_embed = torch.stack(next_acoustic_embeds_list, dim=2).sum(dim=2) # [B, 1, dec_dim]
-            
+            next_acoustic_embed = torch.stack(next_acoustic_embeds_list, dim=2).sum(
+                dim=2
+            )  # [B, 1, dec_dim]
+
             # Get corresponding text embedding
-            next_text_embed = text_embeddings[:, i:i+1, :] # [B, 1, dec_dim]
-            
+            next_text_embed = text_embeddings[:, i : i + 1, :]  # [B, 1, dec_dim]
+
             inputs_embeds = next_acoustic_embed + next_text_embed
-            
+
             # Forward single step
             outputs = self.decoder.model(
                 inputs_embeds=inputs_embeds,
@@ -327,13 +334,19 @@ class ALMModel(LightningModule):
             )
             past_key_values = outputs.past_key_values
             last_hidden = outputs.last_hidden_state
-            
+
         return generated[:, prompt_len:, :]
 
-    def _calculate_loss(self, logits: torch.Tensor, acoustic_tokens: torch.Tensor, prompt_len: torch.Tensor, sequence_lens: torch.Tensor) -> torch.Tensor:
+    def _calculate_loss(
+        self,
+        logits: torch.Tensor,
+        acoustic_tokens: torch.Tensor,
+        prompt_len: torch.Tensor,
+        sequence_lens: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Calculate loss for next token prediction (no staggered shift).
-        
+
         Parameters
         ----------
         logits: torch.Tensor
@@ -344,7 +357,7 @@ class ALMModel(LightningModule):
             Prompt length specifying regions of tokens that should not be used for loss computation of shape [batch,]
         sequence_lens: torch.Tensor
             Sequence length of shape [batch,] specifies regions of acoustic tokens that are padded
-            
+
         Returns
         -------
         loss: torch.Tensor
@@ -352,23 +365,23 @@ class ALMModel(LightningModule):
         """
         # Remove the last logit as we don't have a target for it (it predicts T+1)
         logits = logits[:, :-1, :, :]  # [B, T-1, V_num, V_size]
-        
+
         # Remove the first token from targets as it's the input for the first prediction
         # Targets are shifted by 1 relative to input
         targets = acoustic_tokens[:, 1:, :]  # [B, T-1, V_num]
-        
+
         batch_size, seq_len, vocabs_num, vocab_size = logits.shape
         for i in range(batch_size):
             # Mask out the prompt region in targets so we don't compute loss on it.
             # The model is not trained to predict the prompt, but to continue from it.
-            targets[:, :prompt_len[i], :] = -1
+            targets[:, : prompt_len[i], :] = -1
             # Mask out padded regions
-            targets[:, sequence_lens[i]:, :] = -1
-        
+            targets[:, sequence_lens[i] :, :] = -1
+
         # Flatten for loss computation
         logits_flat = logits.reshape(-1, vocab_size)
         targets_flat = targets.reshape(-1).long()
-        
+
         loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-1)
         return loss
 
@@ -414,7 +427,9 @@ class ALMModel(LightningModule):
         """
         loss = self._step(batch)
         batch_size = batch["phoneme"].shape[0]
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        self.log(
+            "train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size
+        )
         return loss
 
     def validation_step(self, batch: Container, batch_idx: int) -> torch.Tensor:
@@ -435,7 +450,15 @@ class ALMModel(LightningModule):
         """
         loss = self._step(batch)
         batch_size = batch["phoneme"].shape[0]
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=batch_size)
+        self.log(
+            "val_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
         return loss
 
     def configure_optimizers(self):
@@ -452,13 +475,13 @@ class ALMModel(LightningModule):
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
-        
+
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=self.config.num_steps,
             eta_min=self.config.min_learning_rate,
         )
-        
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -472,7 +495,7 @@ class ALMModel(LightningModule):
 class ALMConfig:
     cls: str = ALMModel.__module__ + "." + ALMModel.__name__
     # 768 / 21.5 = 35 seconds
-    max_position_embeddings: int = 768  
+    max_position_embeddings: int = 768
 
     # encoder (text) architecture
     enc_layers_num: int = 16

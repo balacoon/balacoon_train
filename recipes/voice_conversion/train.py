@@ -8,24 +8,34 @@ from balacoon_train.data import create_fold_data_loader
 from balacoon_train.alm import ALMModel
 
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision("medium")
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rank", type=int, default=int(os.environ.get("RANK", 0)), help="Rank of the process")
-    parser.add_argument("--world-size", type=int, default=int(os.environ.get("WORLD_SIZE", 1)), help="Total number of processes")
-    
+    parser.add_argument(
+        "--rank", type=int, default=int(os.environ.get("RANK", 0)), help="Rank of the process"
+    )
+    parser.add_argument(
+        "--world-size",
+        type=int,
+        default=int(os.environ.get("WORLD_SIZE", 1)),
+        help="Total number of processes",
+    )
+
     # Dataset arguments
     parser.add_argument("--train", type=str, required=True, help="Path to train.txt")
-    parser.add_argument("--acoustic-tokens", type=str, required=True, help="Path to acoustic tokens directory")
+    parser.add_argument(
+        "--acoustic-tokens", type=str, required=True, help="Path to acoustic tokens directory"
+    )
     parser.add_argument("--pitch", type=str, required=True, help="Path to pitch directory")
     parser.add_argument("--phonemes", type=str, help="Path to phonemes directory")
     parser.add_argument("--dev", type=str, help="Path to dev.txt")
-    
+
     # Training arguments
     parser.add_argument("--ckpt", type=str, help="Path to checkpoint to resume/load")
     parser.add_argument("--out", type=str, required=True, help="Output directory for training logs")
-    
+
     args = parser.parse_args()
 
     # Load configuration
@@ -87,11 +97,9 @@ def main():
 
     # Start training
     trainer.fit(
-        model,
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
-        ckpt_path=args.ckpt
+        model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=args.ckpt
     )
+
 
 if __name__ == "__main__":
     main()

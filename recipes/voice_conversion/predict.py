@@ -11,12 +11,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", type=str, required=True, help="Path to test.txt")
     parser.add_argument("--id-mapping", type=str, required=True, help="Path to id mapping file")
-    parser.add_argument("--acoustic-tokens", type=str, required=True, help="Path to acoustic tokens directory")
+    parser.add_argument(
+        "--acoustic-tokens", type=str, required=True, help="Path to acoustic tokens directory"
+    )
     parser.add_argument("--pitch", type=str, required=True, help="Path to pitch directory")
     parser.add_argument("--phonemes", type=str, required=True, help="Path to phonemes directory")
     parser.add_argument("--ckpt", type=str, required=True, help="Path to checkpoint to load")
     parser.add_argument("--out", type=str, required=True, help="Output directory predictions")
-    
+
     args = parser.parse_args()
 
     # Load configuration
@@ -41,10 +43,10 @@ def main():
     )
 
     # Create model
-    # We need to pass config.model to load_from_checkpoint because ALMModel 
+    # We need to pass config.model to load_from_checkpoint because ALMModel
     # doesn't save hyperparameters automatically
     model = ALMModel.load_from_checkpoint(args.ckpt, config=config.model)
-    
+
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model.to(device)
     model.eval()
@@ -56,17 +58,18 @@ def main():
             # generated: [batch, (total_seq_len - prompt_len), vocabs_num]
             generated = model.generate(batch)
             print(generated.shape, flush=True)
-        
+
         # Store in container
         batch["generated_acoustic_tokens"] = generated.transpose(1, 2)  # batch x vocabs_num x len
-        
+
         # Save to disk
         batch.save_to_npz(
             streams=["generated_acoustic_tokens"],
             out_dir=args.out,
             seq_axis=1,
-            rename=["acoustic_tokens"] # save with standard name
+            rename=["acoustic_tokens"],  # save with standard name
         )
+
 
 if __name__ == "__main__":
     main()

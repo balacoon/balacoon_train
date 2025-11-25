@@ -22,10 +22,9 @@ class TensorMock:
     @property
     def ndim(self):
         return len(self.shape)
-    
+
     def transpose(self, i, j):
         new_shape = list(self.shape)
         new_shape[i] = self.shape[j]
         new_shape[j] = self.shape[i]
         return TensorMock(tuple(new_shape))
-

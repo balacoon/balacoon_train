@@ -61,11 +61,7 @@ class NpzShapeReaderConfig(NpzLoaderConfig):
     """
 
     cls: str = NpzShapeReader.__module__ + "." + NpzShapeReader.__name__
-    locations: List[str] = field(
-        default_factory=lambda: []
-    )  # directory with "*.npz" files
+    locations: List[str] = field(default_factory=lambda: [])  # directory with "*.npz" files
     name: str = "npz"  # name under which to store a loaded npz in a container
-    stream: str = (
-        "???"  # which stream in npz archive to use as a source of sequence length
-    )
+    stream: str = "???"  # which stream in npz archive to use as a source of sequence length
     axis: int = 1  # what is the sequence axis in the array of npz archive

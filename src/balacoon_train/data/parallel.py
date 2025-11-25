@@ -24,9 +24,7 @@ def split_ids_to_subsets(ids: List[str]) -> List[List[str]]:
     # define number of processes for parallel processing
     nproc = min(multiprocessing.cpu_count(), len(ids), 16)
     k, m = divmod(len(ids), nproc)
-    subsets = [
-        ids[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(nproc)
-    ]
+    subsets = [ids[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)] for i in range(nproc)]
     return subsets
 
 

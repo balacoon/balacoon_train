@@ -18,7 +18,12 @@ from balacoon_train.data.container import Container
 from balacoon_train.data.processors.processor import Processor, ProcessorConfig
 from balacoon_train.data.processors.tensor_mock import TensorMock
 from balacoon_train.data.processors.vc_ops import resample_phonemes, resample_pitch
-from balacoon_train.data.processors.vc_train_processor import VCTrainProcessor, VCTrainProcessorConfig, PITCH_ACOUSTIC_RATIO, PHONEME_ACOUSTIC_RATIO
+from balacoon_train.data.processors.vc_train_processor import (
+    VCTrainProcessor,
+    VCTrainProcessorConfig,
+    PITCH_ACOUSTIC_RATIO,
+    PHONEME_ACOUSTIC_RATIO,
+)
 
 
 class VCPredProcessor(VCTrainProcessor):
@@ -38,32 +43,50 @@ class VCPredProcessor(VCTrainProcessor):
 
         if validate:
             # check that target streams are in the container
-            if any(stream not in container for stream in [self._config.tgt_text_name, self._config.tgt_pitch_name]):
+            if any(
+                stream not in container
+                for stream in [self._config.tgt_text_name, self._config.tgt_pitch_name]
+            ):
                 return False
 
         phonemes = container[self._config.tgt_text_name]  # frames
         pitch = container[self._config.tgt_pitch_name]  # frames
         # compute the target length of acoustic tokens
-        expected_len = int(min(round(phonemes.shape[0] / PHONEME_ACOUSTIC_RATIO), round(pitch.shape[0] / PITCH_ACOUSTIC_RATIO)))
-        print(f">>> figuring how much audio to generate. phonemes: {phonemes.shape[0]}, pitch: {pitch.shape[0]}, expected_len: {expected_len}", flush=True)
+        expected_len = int(
+            min(
+                round(phonemes.shape[0] / PHONEME_ACOUSTIC_RATIO),
+                round(pitch.shape[0] / PITCH_ACOUSTIC_RATIO),
+            )
+        )
+        print(
+            f">>> figuring how much audio to generate. phonemes: {phonemes.shape[0]}, pitch: {pitch.shape[0]}, expected_len: {expected_len}",
+            flush=True,
+        )
 
         if validate:
             # check that the total length of prompt + tokens to be generated is not bigger
             # than max length
             total_len = container[self._config.name].shape[0] + expected_len
             return total_len < self._config.max_seq_len
-        
+
         # align phonemes and pitch
         # Resampling is necessary because phonemes/pitch and acoustic tokens operate at different frame rates.
         # We need to align them to the same length (acoustic tokens length) for the model.
-        phonemes = torch.from_numpy(resample_phonemes(phonemes.numpy().astype(np.int32), expected_len))
-        pitch = torch.from_numpy(resample_pitch(pitch.numpy().astype(np.float32), expected_len)).int()
+        phonemes = torch.from_numpy(
+            resample_phonemes(phonemes.numpy().astype(np.int32), expected_len)
+        )
+        pitch = torch.from_numpy(
+            resample_pitch(pitch.numpy().astype(np.float32), expected_len)
+        ).int()
         pitch = self.shift_pitch(pitch)
         # verify that resampling worked
         assert phonemes.shape[0] == expected_len and pitch.shape[0] == expected_len
 
         # concatenate reference and target phonemes and pitch
-        print(f"<< composing new phonemes. concat {phonemes.shape} and {container[self._config.text_name].shape}", flush=True)
+        print(
+            f"<< composing new phonemes. concat {phonemes.shape} and {container[self._config.text_name].shape}",
+            flush=True,
+        )
         phonemes = torch.cat([container[self._config.text_name], phonemes], dim=0)
         pitch = torch.cat([container[self._config.pitch_name], pitch], dim=0)
 

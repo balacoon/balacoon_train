@@ -28,9 +28,7 @@ class DataConfig:
     speakers: List[str] = field(
         default_factory=lambda: []
     )  #: quick access list of speaker regexes for the given dataset
-    dataset: DatasetConfig = field(
-        default_factory=DatasetConfig
-    )  # defines loading of the data
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)  # defines loading of the data
     seq_len: SequenceLengthReaderConfig = field(
         default_factory=SequenceLengthReaderConfig
     )  # defines how to get sequence lengths for bucketing
@@ -97,14 +95,8 @@ def create_dataset(
             # the utterances
             while not os.path.isfile(valid_ids_path):
                 time.sleep(5)
-                logging.info(
-                    "[{}] waits for master process to validate utterances".format(
-                        stride
-                    )
-                )
-            time.sleep(
-                1
-            )  # wait for just 1 more sec before reading, in case master is writing
+                logging.info("[{}] waits for master process to validate utterances".format(stride))
+            time.sleep(1)  # wait for just 1 more sec before reading, in case master is writing
             ids = read_ids(valid_ids_path)
 
     # mapping between indices and utterance names
@@ -180,6 +172,4 @@ def create_fold_data_loader(
     if not ids_path:
         return None
     stride = 0 if stride < 0 else stride
-    return create_data_loader(
-        config, ids_path, shuffle, stride=stride, strides_num=strides_num
-    )
+    return create_data_loader(config, ids_path, shuffle, stride=stride, strides_num=strides_num)

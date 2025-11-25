@@ -4,6 +4,7 @@ Copyright 2022 Balacoon
 implementation container for the data,
 to be passed at data loading and between models
 """
+
 from __future__ import annotations
 
 import os
@@ -23,6 +24,7 @@ tensors, arrays, npz archives or linguistic utterances
 TensorType = Union[np.ndarray, torch.Tensor, TensorMock]
 try:
     from balacoon_frontend import LinguisticUtterance
+
     DataType = Union[TensorType, LinguisticUtterance, np.lib.npyio.NpzFile, sf.SoundFile]
 except ImportError:
     DataType = Union[TensorType, np.lib.npyio.NpzFile, sf.SoundFile]
@@ -101,9 +103,7 @@ class Container:
         uttid: str
             alternative utterance id, previously added with `set_alternative_id`
         """
-        assert name in self._other_ids, "No alternative utterance id for [{}]".format(
-            name
-        )
+        assert name in self._other_ids, "No alternative utterance id for [{}]".format(name)
         return self._other_ids[name]
 
     def get_ids(self) -> List[str]:
@@ -133,9 +133,7 @@ class Container:
         """
         return name in self._data
 
-    def __setitem__(
-        self, names: Union[List[str], str], tensors: Union[List[DataType], DataType]
-    ):
+    def __setitem__(self, names: Union[List[str], str], tensors: Union[List[DataType], DataType]):
         """
         Adds the data into container. There are 2 options:
 
@@ -170,9 +168,7 @@ class Container:
                 )
             self._data[names] = tensors
 
-    def __getitem__(
-        self, names: Union[List[str], str]
-    ) -> Union[List[DataType], DataType]:
+    def __getitem__(self, names: Union[List[str], str]) -> Union[List[DataType], DataType]:
         """
         Getter for the data stored in container
 
@@ -301,9 +297,9 @@ class Container:
                 if actual_lens:
                     # take seq lens tensor out of container based on the name
                     seq_len = self[actual_lens[j]]
-                    assert (
-                        seq_len.ndim == 1
-                    ), "{} should be a sequence length tensor".format(actual_lens[j])
+                    assert seq_len.ndim == 1, "{} should be a sequence length tensor".format(
+                        actual_lens[j]
+                    )
                     # select sequence length for the utterance based on batch_idx
                     seq_len_val = int(seq_len[i])
                     assert seq_axis is not None  # since actual_lens is provided
@@ -346,9 +342,7 @@ class Container:
         sampling_rate: int
             sampling rate to save audio with
         """
-        assert name in self, "Can't save {} to wav, it's not in the container".format(
-            name
-        )
+        assert name in self, "Can't save {} to wav, it's not in the container".format(name)
         os.makedirs(out_dir, exist_ok=True)
         batch_audio = cast(torch.Tensor, self[name]).detach().cpu().numpy()
         assert batch_audio.ndim == 2, "Tensor to save as wav should have 2 dimensions"

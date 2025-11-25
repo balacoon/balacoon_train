@@ -42,9 +42,7 @@ class Loader(ABC):
             with open(config.id_mapping, "r") as fp:
                 for line in fp:
                     parts = line.strip().split()
-                    assert (
-                        len(parts) == 2
-                    ), "Invalid id_mapping line: [{}] in {}".format(
+                    assert len(parts) == 2, "Invalid id_mapping line: [{}] in {}".format(
                         line, config.id_mapping
                     )
                     self._id_mapping[parts[0]] = parts[1]
@@ -80,9 +78,7 @@ class Loader(ABC):
                 return None
             # map uttid to some other to be loaded
             uttid = self._id_mapping[uttid]
-        for possible_dir, has_subdirs in zip(
-            self._locations, self._locations_have_subdirs
-        ):
+        for possible_dir, has_subdirs in zip(self._locations, self._locations_have_subdirs):
             # if there is no sub-directories, i.e. files are directly in data dir, without being nested,
             # then statement has no effect
             subdirs = [""]
@@ -122,9 +118,7 @@ class Loader(ABC):
         """
         assert (
             self._config.name in container
-        ), "Can't remove loaded data from container {}, its not there".format(
-            self._config.name
-        )
+        ), "Can't remove loaded data from container {}, its not there".format(self._config.name)
         container.pop(self._config.name)
 
 
@@ -136,12 +130,8 @@ class LoaderConfig(ConfigurableConfig):
     """
 
     cls: str = "???"
-    name: str = (
-        "???"  # name of the loader, which is used as a key to store data in container
-    )
-    locations: List[str] = field(
-        default_factory=lambda: []
-    )  # directories with files to load
+    name: str = "???"  # name of the loader, which is used as a key to store data in container
+    locations: List[str] = field(default_factory=lambda: [])  # directories with files to load
     extension: str = "???"  # extension of the files to load
     id_mapping: str = ""  # path to id mapping if any (alters id that is returned)
     alternative: str = ""  # alternative utterance id key to get from container

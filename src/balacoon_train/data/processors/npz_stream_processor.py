@@ -66,7 +66,10 @@ class NpzStreamProcessor(Processor):
             if npz_stream_name not in npz.files:
                 logging.warning(
                     "{} is not present for {} in {}. there are {}".format(
-                        npz_stream_name, self._config.loader, container.get_id(), str(npz.files),
+                        npz_stream_name,
+                        self._config.loader,
+                        container.get_id(),
+                        str(npz.files),
                     )
                 )
                 return False
@@ -81,9 +84,7 @@ class NpzStreamProcessor(Processor):
                 elif version[0] == 2:
                     arr_header = np.lib.format.read_array_header_2_0(npy)
                 else:
-                    raise RuntimeError(
-                        "Unexpected numpy array version: " + str(version)
-                    )
+                    raise RuntimeError("Unexpected numpy array version: " + str(version))
                 shape = arr_header[0]
             if self._config.transpose:
                 shape = shape[::-1]
@@ -107,9 +108,7 @@ class NpzStreamProcessor(Processor):
             arr = npz[npz_stream_name]
             if self._config.transpose:
                 arr = arr.transpose()
-            container[self._config.name] = torch.tensor(
-                arr, dtype=self._get_torch_type()
-            )
+            container[self._config.name] = torch.tensor(arr, dtype=self._get_torch_type())
         return True
 
 

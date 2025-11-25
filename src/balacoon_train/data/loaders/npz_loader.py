@@ -73,7 +73,5 @@ class NpzLoaderConfig(LoaderConfig):
 
     cls: str = NpzLoader.__module__ + "." + NpzLoader.__name__
     name: str = "???"  # name under which npz archive is stored in the data container
-    locations: List[str] = field(
-        default_factory=lambda: []
-    )  # directory with "*.npz" files
+    locations: List[str] = field(default_factory=lambda: [])  # directory with "*.npz" files
     extension: str = "npz"  # extension of npz files

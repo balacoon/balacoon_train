@@ -92,9 +92,7 @@ class OtherUtteranceSelector(Loader):
         if validate:
             if cat < 0:
                 logging.warning(
-                    "There is no category for [{}], skip since no alternative".format(
-                        name
-                    )
+                    "There is no category for [{}], skip since no alternative".format(name)
                 )
                 return False
             # put back same name as alternative so other dependent data loaders/processors can be validated
@@ -121,8 +119,6 @@ class OtherUtteranceSelectorConfig(LoaderConfig):
     """
 
     cls: str = OtherUtteranceSelector.__module__ + "." + OtherUtteranceSelector.__name__
-    name: str = (
-        "alternative"  # is put to data container together with alternative utterance id
-    )
+    name: str = "alternative"  # is put to data container together with alternative utterance id
     categories: List[str] = field(default_factory=lambda: [])  # regexes for categories
     extension: str = ""  # dummy entry to comply with parent class

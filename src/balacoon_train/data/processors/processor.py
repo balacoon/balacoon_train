@@ -19,6 +19,7 @@ class Processor(ABC):
     Interface that specifies the functions that data processor should implement.
     It should be a configurable object, which has function `process`.
     """
+
     def __init__(self, config: Config):
         self._config = config
 
@@ -87,9 +88,7 @@ class Processor(ABC):
         if all([x == 0 for x in pre_pad]) and all([x == 0 for x in post_pad]):
             # no need to do padding
             return tensor
-        pad_width = (
-            [0] * tensor.ndim * 2
-        )  # padding before and after for each dimension of a tensor
+        pad_width = [0] * tensor.ndim * 2  # padding before and after for each dimension of a tensor
         for a, pre, post in zip(axis, pre_pad, post_pad):
             pad_width[a * 2 + 1] = pre
             pad_width[a * 2] = post
@@ -98,9 +97,7 @@ class Processor(ABC):
         return padded_tensor
 
     @staticmethod
-    def replicate_pad_tensor(
-        tensor: torch.Tensor, axis: int, post_pad: int
-    ) -> torch.Tensor:
+    def replicate_pad_tensor(tensor: torch.Tensor, axis: int, post_pad: int) -> torch.Tensor:
         """
         Perform post-padding by replicating the last frame.
         It is separated into a special case, because functional
@@ -145,13 +142,16 @@ class Processor(ABC):
         """
         if mode == "replicate" and pre_pad == 0:
             return Processor.replicate_pad_tensor(tensor, axis, post_pad)
-        return Processor.multi_pad_tensor(
-            tensor, [axis], [pre_pad], [post_pad], mode, val
-        )
+        return Processor.multi_pad_tensor(tensor, [axis], [pre_pad], [post_pad], mode, val)
 
     @staticmethod
     def pad_and_stack(
-        tensors: List[torch.Tensor], axis: int, mode: str = "constant", val: float = 0.0, on_right: bool = True, multiple_of: int = 1
+        tensors: List[torch.Tensor],
+        axis: int,
+        mode: str = "constant",
+        val: float = 0.0,
+        on_right: bool = True,
+        multiple_of: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         helper function that takes tensors belonging to the batch, defines maximum length in the batch,
@@ -219,7 +219,9 @@ class Processor(ABC):
         # collation happens only on output of processors, i.e. torch tensors,
         # other data (NpzFile, LinguisticUtterance) should be dropped by now
         tensors = [cast(torch.Tensor, x[self._config.name]) for x in batch_elements]
-        combined, seq_len = self.pad_and_stack(tensors, axis=self._config.axis, val=self._config.pad_value)
+        combined, seq_len = self.pad_and_stack(
+            tensors, axis=self._config.axis, val=self._config.pad_value
+        )
         # store both batch and sequence length to a container.
         # sequence length might be needed to mask textual encoders
         # in the padded regions
@@ -250,8 +252,6 @@ class ProcessorConfig(ConfigurableConfig):
     cls: str = "???"
     type: str = "float32"  # in which to create a data
     name: str = "???"  # name under which to store the extracted data
-    axis: int = (
-        0  # sequence axis in extracted data; during batching, this dimension is padded
-    )
+    axis: int = 0  # sequence axis in extracted data; during batching, this dimension is padded
     pad_value: float = 0.0
     to_collate: bool = True

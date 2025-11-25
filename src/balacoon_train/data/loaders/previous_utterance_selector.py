@@ -12,7 +12,10 @@ from typing import Dict, List
 
 from balacoon_train.config import Config
 from balacoon_train.data.container import Container
-from balacoon_train.data.loaders.other_utterance_selector import OtherUtteranceSelector, OtherUtteranceSelectorConfig
+from balacoon_train.data.loaders.other_utterance_selector import (
+    OtherUtteranceSelector,
+    OtherUtteranceSelectorConfig,
+)
 
 
 class PreviousUtteranceSelector(OtherUtteranceSelector):
@@ -44,10 +47,10 @@ class PreviousUtteranceSelector(OtherUtteranceSelector):
             * if there is no predecessor/successor - use any utterance from same speaker.
               for this one - fall back to parent OtherUtteranceSelector
         """
-        
+
         # set alternatives of parent
         super().set_alternatives(ids)
-        
+
         # to check if such an id exists
         ids_set = set(ids)
 
@@ -67,7 +70,7 @@ class PreviousUtteranceSelector(OtherUtteranceSelector):
                     prev_idx_str = str(prev_idx)
                     suffixes.append(prev_idx_str)
                     suffixes.append(prev_idx_str.zfill(len(idx_str)))
-            
+
             # go through suffixes and check if there is any name like that
             for suffix in suffixes:
                 prev_name = prefix + suffix
@@ -99,15 +102,11 @@ class PreviousUtteranceSelector(OtherUtteranceSelector):
         name = container.get_id()
         if validate:
             if self._order_re.search(name) is None:
-                logging.warning(
-                    f"Can't extract order from [{name}] to define previous utterance"
-                )
+                logging.warning(f"Can't extract order from [{name}] to define previous utterance")
                 return False
             if self._find_category(name) < 0:
                 logging.warning(
-                    "There is no category for [{}], skip since no alternative".format(
-                        name
-                    )
+                    "There is no category for [{}], skip since no alternative".format(name)
                 )
                 return False
             # put back same name as previous so other dependent data loaders/processors can be validated
@@ -137,11 +136,7 @@ class PreviousUtteranceSelectorConfig(OtherUtteranceSelectorConfig):
     defines regexes for part of utterance that corresponds to order
     """
 
-    cls: str = (
-        PreviousUtteranceSelector.__module__ + "." + PreviousUtteranceSelector.__name__
-    )
-    name: str = (
-        "previous"  # is put to data container together with previous utterance id
-    )
+    cls: str = PreviousUtteranceSelector.__module__ + "." + PreviousUtteranceSelector.__name__
+    name: str = "previous"  # is put to data container together with previous utterance id
     order_regex: str = "^(.+_)([0-9]+)$"  # regex to apply to utterance id to get order
     extension: str = ""  # dummy entry to comply with parent class
