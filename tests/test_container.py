@@ -1,3 +1,8 @@
+"""
+Copyright 2025 Balacoon
+
+Tests for data container
+"""
 
 import pytest
 import torch

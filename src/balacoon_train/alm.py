@@ -359,7 +359,10 @@ class ALMModel(LightningModule):
         
         batch_size, seq_len, vocabs_num, vocab_size = logits.shape
         for i in range(batch_size):
+            # Mask out the prompt region in targets so we don't compute loss on it.
+            # The model is not trained to predict the prompt, but to continue from it.
             targets[:, :prompt_len[i], :] = -1
+            # Mask out padded regions
             targets[:, sequence_lens[i]:, :] = -1
         
         # Flatten for loss computation

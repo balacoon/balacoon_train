@@ -309,6 +309,8 @@ class Container:
                     assert seq_axis is not None  # since actual_lens is provided
                     slice_axis = seq_axis[j]
                     # need to slice array according to actual lens of the tensor, dropping the padding
+                    # This is crucial because during batching, sequences are padded to the max length in the batch.
+                    # When saving back to individual files, we want to remove this padding to save space and restore original data.
                     slice_indices = [slice(None)] * arr.ndim
                     slice_indices[slice_axis] = slice(seq_len_val)
                     arr = arr[tuple(slice_indices)]

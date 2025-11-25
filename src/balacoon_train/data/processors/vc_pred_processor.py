@@ -54,6 +54,8 @@ class VCPredProcessor(VCTrainProcessor):
             return total_len < self._config.max_seq_len
         
         # align phonemes and pitch
+        # Resampling is necessary because phonemes/pitch and acoustic tokens operate at different frame rates.
+        # We need to align them to the same length (acoustic tokens length) for the model.
         phonemes = torch.from_numpy(resample_phonemes(phonemes.numpy().astype(np.int32), expected_len))
         pitch = torch.from_numpy(resample_pitch(pitch.numpy().astype(np.float32), expected_len)).int()
         pitch = self.shift_pitch(pitch)

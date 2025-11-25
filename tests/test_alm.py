@@ -1,3 +1,8 @@
+"""
+Copyright 2025 Balacoon
+
+Tests for ALM model
+"""
 
 import pytest
 import torch

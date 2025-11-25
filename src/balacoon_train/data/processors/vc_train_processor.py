@@ -64,6 +64,8 @@ class VCTrainProcessor(Processor):
             return True
         
         # align phonemes and pitch to the same length as acoustic tokens
+        # This ensures that for every acoustic token we have a corresponding phoneme and pitch value,
+        # which are used as conditions in the model.
         print(f">>> train processor. change phoneme shape from {phonemes.shape} to {expected_len}", flush=True)
         phonemes = torch.from_numpy(resample_phonemes(phonemes.numpy().astype(np.int32), expected_len))
         pitch = torch.from_numpy(resample_pitch(pitch.numpy().astype(np.float32), expected_len)).int()

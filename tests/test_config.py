@@ -1,3 +1,8 @@
+"""
+Copyright 2025 Balacoon
+
+Tests for configuration management
+"""
 
 import pytest
 from dataclasses import dataclass
