@@ -220,7 +220,10 @@ class Processor(ABC):
         # other data (NpzFile, LinguisticUtterance) should be dropped by now
         tensors = [cast(torch.Tensor, x[self._config.name]) for x in batch_elements]
         combined, seq_len = self.pad_and_stack(
-            tensors, axis=self._config.axis, val=self._config.pad_value
+            tensors,
+            axis=self._config.axis,
+            val=self._config.pad_value,
+            on_right=self._config.pad_on_right,
         )
         # store both batch and sequence length to a container.
         # sequence length might be needed to mask textual encoders
@@ -254,4 +257,5 @@ class ProcessorConfig(ConfigurableConfig):
     name: str = "???"  # name under which to store the extracted data
     axis: int = 0  # sequence axis in extracted data; during batching, this dimension is padded
     pad_value: float = 0.0
+    pad_on_right: bool = True
     to_collate: bool = True

@@ -1,3 +1,7 @@
+
+acoustic_vocab_size: 2024
+phoneme_vocab_size: 37
+
 data:
   locations:
     train_txt: "???"
@@ -23,15 +27,20 @@ data:
         type: "int32"
         axis: 0
         transpose: true
+        pad_on_right: false
+        pad_value: ${acoustic_vocab_size}
         max_len: 768   
         min_len: 96
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "phoneme"
         loader: "phoneme_npz"
+        pad_on_right: false
+        pad_value: ${phoneme_vocab_size}
         type: "int32"
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "pitch"
         loader: "pitch_npz"
+        pad_on_right: false
         type: "int32"
       - cls: "balacoon_train.data.processors.vc_train_processor.VCTrainProcessor"
         name: "acoustic_tokens"
@@ -46,4 +55,6 @@ data:
 
 model:
   cls: "balacoon_train.alm.ALMModel"
+  phonemes_num: ${phoneme_vocab_size}
+  dec_vocab_size: ${acoustic_vocab_size}
   num_steps: 50000

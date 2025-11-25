@@ -93,7 +93,12 @@ def test_forward_shape(model, batch_data, config):
     acoustic_seq_len = batch_data["acoustic_tokens"].size(1)
 
     # Expected shape: [batch, seq_len, num_vocabs, vocab_size]
-    expected_shape = (batch_size, acoustic_seq_len, config.dec_vocabs_num, config.dec_vocab_size)
+    expected_shape = (
+        batch_size,
+        acoustic_seq_len,
+        config.dec_vocabs_num,
+        config.dec_vocab_size + 1,
+    )
     assert logits.shape == expected_shape
 
 

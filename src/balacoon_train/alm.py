@@ -48,7 +48,7 @@ class ALMModel(LightningModule):
         config.add_missing(ALMConfig)
         self.config = config
 
-        self.phonemes_embedding = nn.Embedding(self.config.phonemes_num, self.config.enc_dim)
+        self.phonemes_embedding = nn.Embedding(self.config.phonemes_num + 1, self.config.enc_dim)
         self.pitch_embedding = nn.Embedding(self.config.pitch_num, self.config.enc_dim)
 
         # Encoder configuration (100M params, non-causal)
@@ -66,7 +66,7 @@ class ALMModel(LightningModule):
 
         # Decoder configuration (300M params, causal)
         decoder_config = LlamaConfig(
-            vocab_size=self.config.dec_vocab_size,
+            vocab_size=1,  # Dummy value, as we provide custom embeddings
             hidden_size=self.config.dec_dim,
             intermediate_size=4 * self.config.dec_dim,
             num_hidden_layers=self.config.dec_layers_num,
@@ -87,7 +87,7 @@ class ALMModel(LightningModule):
         # Acoustic token embedding (separate from decoder's embedding)
         self.acoustic_embedding = nn.ModuleList(
             [
-                nn.Embedding(self.config.dec_vocab_size, self.config.dec_dim)
+                nn.Embedding(self.config.dec_vocab_size + 1, self.config.dec_dim)
                 for _ in range(self.config.dec_vocabs_num)
             ]
         )
@@ -97,7 +97,7 @@ class ALMModel(LightningModule):
 
         # Output projection for multi-token prediction
         self.acoustic_projection = nn.Linear(
-            self.config.dec_dim, self.config.dec_vocab_size * self.config.dec_vocabs_num
+            self.config.dec_dim, (self.config.dec_vocab_size + 1) * self.config.dec_vocabs_num
         )
 
     def forward(
@@ -120,12 +120,13 @@ class ALMModel(LightningModule):
             Pitch of shape [batch_size, seq_len]
         sequence_lens: Optional[torch.Tensor]
             Length of sequences in the batch of shape [batch_size,]
+            Important: we are padding on the left!
 
         Returns
         -------
         outputs: Dict[str, torch.Tensor]
             Dictionary containing:
-            - logits: predicted logits of shape [batch_size, acoustic_seq_len, dec_vocabs_num, dec_vocab_size]
+            - logits: predicted logits of shape [batch_size, acoustic_seq_len, dec_vocabs_num, dec_vocab_size + 1]
             - encoder_hidden_states: encoder outputs
         """
         batch_size = acoustic_tokens.size(0)
@@ -136,10 +137,19 @@ class ALMModel(LightningModule):
         batch_size, seq_len = text_tokens.shape
         if sequence_lens is None:
             sequence_lens_mask = torch.ones_like(text_tokens)
+            position_ids = None
         else:
             # Create mask [B, L]
             idx = torch.arange(seq_len, device=device).expand(batch_size, seq_len)
-            sequence_lens_mask = (idx < sequence_lens.unsqueeze(1)).long()
+            # Left padding: valid tokens are at the end of the sequence
+            # indices [L-len, ..., L-1] should be 1
+            sequence_lens_mask = (idx >= (seq_len - sequence_lens.unsqueeze(1))).long()
+
+            # Create position_ids that ignore left padding
+            # valid tokens should start at position 0
+            # mask: 0 0 1 1 -> cumsum: 0 0 1 2 -> sub 1: -1 -1 0 1 -> relu: 0 0 0 1
+            position_ids = sequence_lens_mask.cumsum(dim=1) - 1
+            position_ids.clamp_(min=0)
 
         # Create bidirectional mask: [batch_size, num_heads, seq_len, seq_len]
         bidirectional_mask = sequence_lens_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, L]
@@ -155,6 +165,7 @@ class ALMModel(LightningModule):
         encoder_outputs = self.encoder(
             inputs_embeds=text_embeds,
             attention_mask=encoder_attention_mask,  # 4d mask overwrites internal transformers mask
+            position_ids=position_ids,
             return_dict=True,
         )
         encoder_hidden_states = encoder_outputs.last_hidden_state
@@ -182,6 +193,7 @@ class ALMModel(LightningModule):
         decoder_outputs = self.decoder.model(
             inputs_embeds=combined_embeds,
             attention_mask=sequence_lens_mask.clone(),  # B, L mask means mask will be used
+            position_ids=position_ids,
             return_dict=True,
         )
         decoder_hidden_states = decoder_outputs.last_hidden_state
@@ -189,7 +201,7 @@ class ALMModel(LightningModule):
         # Project to output logits
         logits = self.acoustic_projection(decoder_hidden_states)
         logits = logits.view(
-            batch_size, acoustic_seq_len, self.config.dec_vocabs_num, self.config.dec_vocab_size
+            batch_size, acoustic_seq_len, self.config.dec_vocabs_num, self.config.dec_vocab_size + 1
         )
 
         output = {"logits": logits, "encoder_hidden_states": encoder_hidden_states}
@@ -293,7 +305,7 @@ class ALMModel(LightningModule):
             # Project to logits
             logits = self.acoustic_projection(last_hidden)  # [B, 1, num_vocabs * vocab_size]
             logits = logits.view(
-                batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size
+                batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size + 1
             )
 
             # Sample next token (all codebooks in parallel)
@@ -374,9 +386,13 @@ class ALMModel(LightningModule):
         for i in range(batch_size):
             # Mask out the prompt region in targets so we don't compute loss on it.
             # The model is not trained to predict the prompt, but to continue from it.
-            targets[:, : prompt_len[i], :] = -1
-            # Mask out padded regions
-            targets[:, sequence_lens[i] :, :] = -1
+            # With left padding:
+            # Padding: [0, ..., seq_len - sequence_lens[i]]
+            # Prompt starts after padding: [seq_len - sequence_lens[i], ..., seq_len - sequence_lens[i] + prompt_len[i]]
+            # We mask everything from 0 up to prompt end.
+            padding_len = seq_len - sequence_lens[i]
+            mask_end = padding_len + prompt_len[i]
+            targets[:, :mask_end, :] = -1
 
         # Flatten for loss computation
         logits_flat = logits.reshape(-1, vocab_size)
