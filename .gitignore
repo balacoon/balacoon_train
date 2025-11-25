@@ -1,0 +1,5 @@
+**/__pycache__
+src/balacoon_train.egg-info
+build
+src/balacoon_train/data/processors/vc_ops.c
+src/balacoon_train/data/processors/vc_ops.cpython-312-x86_64-linux-gnu.so

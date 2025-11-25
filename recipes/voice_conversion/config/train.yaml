@@ -1,0 +1,49 @@
+data:
+  locations:
+    train_txt: "???"
+    dev_txt: ""
+    acoustic_tokens_dir: ["???"]
+    phoneme_dir: ["???"]
+    pitch_dir: ["???"]
+  dataset:
+    loaders:
+      - cls: "balacoon_train.data.loaders.npz_loader.NpzLoader"
+        locations: ${data.locations.acoustic_tokens_dir}
+        name: "acoustic_tokens_npz"
+      - cls: "balacoon_train.data.loaders.npz_loader.NpzLoader"
+        locations: ${data.locations.phoneme_dir}
+        name: "phoneme_npz"
+      - cls: "balacoon_train.data.loaders.npz_loader.NpzLoader"
+        locations: ${data.locations.pitch_dir}
+        name: "pitch_npz"
+    processors:
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "acoustic_tokens"
+        loader: "acoustic_tokens_npz"
+        type: "int32"
+        axis: 0
+        transpose: true
+        max_len: 768   
+        min_len: 96
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "phoneme"
+        loader: "phoneme_npz"
+        type: "int32"
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "pitch"
+        loader: "pitch_npz"
+        type: "int32"
+      - cls: "balacoon_train.data.processors.vc_train_processor.VCTrainProcessor"
+        name: "acoustic_tokens"
+
+  seq_len:
+    cls: "balacoon_train.data.seq_len_readers.npz_shape_reader.NpzShapeReader"
+    locations: ${data.locations.acoustic_tokens_dir}
+    stream: "acoustic_tokens"
+    axis: 1
+  batch_size: 4
+  num_workers: 8
+
+model:
+  cls: "balacoon_train.alm.ALMModel"
+  num_steps: 50000
