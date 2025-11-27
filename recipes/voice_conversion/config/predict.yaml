@@ -1,4 +1,6 @@
 max_seq_len: 768
+acoustic_vocab_size: 2024
+phoneme_vocab_size: 37
 data:
   locations:
     test_txt: "???"
@@ -36,26 +38,29 @@ data:
         type: "int32"
         axis: 0
         transpose: true
-        max_len: ${max_seq_len}
-        min_len: 64
+        pad_on_right: false
+        pad_value: ${acoustic_vocab_size}
+        min_len: 64  # at least 3 seconds needed to use as prompt
   
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "ref_phoneme"
         npz_name: "phoneme"
         loader: "ref_phoneme_npz"
+        pad_on_right: false
+        pad_value: ${phoneme_vocab_size}
         type: "int32"
-        to_collate: false
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "phoneme"
         loader: "phoneme_npz"
+        pad_value: ${phoneme_vocab_size}
         type: "int32"
 
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "ref_pitch"
         npz_name: "pitch"
+        pad_on_right: false
         loader: "ref_pitch_npz"
         type: "int32"
-        to_collate: false
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "pitch"
         loader: "pitch_npz"
@@ -70,8 +75,8 @@ data:
     locations: ${data.locations.pitch_dir}
     stream: "pitch"
     axis: 0
-  batch_size: 1
-  num_workers: 2
+  batch_size: 4
+  num_workers: 8
 
 model:
   cls: "balacoon_train.alm.ALMModel"

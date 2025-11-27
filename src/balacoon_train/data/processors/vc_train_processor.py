@@ -47,10 +47,6 @@ class VCTrainProcessor(Processor):
         phonemes = container[self._config.text_name]  # frames
         pitch = container[self._config.pitch_name]  # frames
         acoustic_tokens = container[self._config.name]  # frames x vocabs
-        print(
-            f">>> train processor. phonemes: {phonemes.shape}, pitch: {pitch.shape}, acoustic_tokens: {acoustic_tokens.shape}, for {self._config.text_name}, {self._config.pitch_name}, {self._config.name}",
-            flush=True,
-        )
 
         # check that the ratio between rates is as expected
         expected_len = acoustic_tokens.shape[0]
@@ -78,10 +74,6 @@ class VCTrainProcessor(Processor):
         # align phonemes and pitch to the same length as acoustic tokens
         # This ensures that for every acoustic token we have a corresponding phoneme and pitch value,
         # which are used as conditions in the model.
-        print(
-            f">>> train processor. change phoneme shape from {phonemes.shape} to {expected_len}",
-            flush=True,
-        )
         phonemes = torch.from_numpy(
             resample_phonemes(phonemes.numpy().astype(np.int32), expected_len)
         )

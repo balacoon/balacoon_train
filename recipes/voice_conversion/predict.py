@@ -55,20 +55,7 @@ def main():
     for batch in tqdm(test_loader):
         batch = batch.to(device)
         with torch.no_grad():
-            # generated: [batch, (total_seq_len - prompt_len), vocabs_num]
-            generated = model.generate(batch)
-            print(generated.shape, flush=True)
-
-        # Store in container
-        batch["generated_acoustic_tokens"] = generated.transpose(1, 2)  # batch x vocabs_num x len
-
-        # Save to disk
-        batch.save_to_npz(
-            streams=["generated_acoustic_tokens"],
-            out_dir=args.out,
-            seq_axis=1,
-            rename=["acoustic_tokens"],  # save with standard name
-        )
+            model.generate(batch, args.out)
 
 
 if __name__ == "__main__":

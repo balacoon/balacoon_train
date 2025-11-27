@@ -58,10 +58,6 @@ class VCPredProcessor(VCTrainProcessor):
                 round(pitch.shape[0] / PITCH_ACOUSTIC_RATIO),
             )
         )
-        print(
-            f">>> figuring how much audio to generate. phonemes: {phonemes.shape[0]}, pitch: {pitch.shape[0]}, expected_len: {expected_len}",
-            flush=True,
-        )
 
         if validate:
             # check that the total length of prompt + tokens to be generated is not bigger
@@ -82,24 +78,32 @@ class VCPredProcessor(VCTrainProcessor):
         # verify that resampling worked
         assert phonemes.shape[0] == expected_len and pitch.shape[0] == expected_len
 
-        # concatenate reference and target phonemes and pitch
-        print(
-            f"<< composing new phonemes. concat {phonemes.shape} and {container[self._config.text_name].shape}",
-            flush=True,
-        )
-        phonemes = torch.cat([container[self._config.text_name], phonemes], dim=0)
-        pitch = torch.cat([container[self._config.pitch_name], pitch], dim=0)
-
-        # put tensors back into the container, so they can be collated by respected npz processors
+        # put back tgt pitch and tgt phonemes to container
         container[self._config.tgt_text_name] = phonemes
         container[self._config.tgt_pitch_name] = pitch
         return True
 
     def collate(self, batch_elements: list[Container], batch: Container):
         """
-        Nothing to do here, npz processors take care of collating the streams
+        During collation we need to concatenate reference and target phonemes and pitch.
+        In that way total prompt_len would be the same for all sequences in the batch,
+        the sequences would be padded both on the left and on the right.
+
+        pitch: x x x 1 2 3 | 6 1 x x
+        ref_pitch_len[i] = 3 (1, 2, 3 - is a reference pitch values without padding)
+        ref_acoustic_tokens.shape[0] = 6 (x x x 1 2 3 - reference and the padding)
+        pitch_len[i] = 2 (6, 1 - target pitch values without padding)
         """
-        pass
+        ref_pitch = cast(torch.Tensor, batch[self._config.pitch_name])
+        tgt_pitch = cast(torch.Tensor, batch[self._config.tgt_pitch_name])
+        pitch = torch.cat([ref_pitch, tgt_pitch], dim=1)
+
+        ref_phonemes = cast(torch.Tensor, batch[self._config.text_name])
+        tgt_phonemes = cast(torch.Tensor, batch[self._config.tgt_text_name])
+        phonemes = torch.cat([ref_phonemes, tgt_phonemes], dim=1)
+
+        batch[self._config.tgt_pitch_name] = pitch
+        batch[self._config.tgt_text_name] = phonemes
 
 
 @dataclass
