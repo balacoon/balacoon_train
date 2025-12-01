@@ -48,7 +48,7 @@ class ALMModel(LightningModule):
         config.add_missing(ALMConfig)
         self.config = config
 
-        self.phonemes_embedding = nn.Embedding(self.config.phonemes_num + 1, self.config.enc_dim)
+        self.phonemes_proj = nn.Linear(self.config.phonemes_num, self.config.enc_dim)
         self.pitch_embedding = nn.Embedding(self.config.pitch_num, self.config.enc_dim)
 
         # Encoder configuration (100M params, non-causal)
@@ -103,7 +103,7 @@ class ALMModel(LightningModule):
     def forward(
         self,
         acoustic_tokens: torch.Tensor,
-        text_tokens: torch.Tensor,
+        phoneme_probs: torch.Tensor,
         pitch: torch.Tensor,
         sequence_lens: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
@@ -114,8 +114,8 @@ class ALMModel(LightningModule):
         ----------
         acoustic_tokens: torch.Tensor
             Acoustic token indices of shape [batch_size, seq_len, vocabs_num]
-        text_tokens: torch.Tensor
-            Text token indices of shape [batch_size, seq_len]
+        phoneme_probs: torch.Tensor
+            Phoneme probabilities [batch_size, seq_len, vocab_size]
         pitch: torch.Tensor
             Pitch of shape [batch_size, seq_len]
         sequence_lens: Optional[torch.Tensor]
@@ -131,12 +131,12 @@ class ALMModel(LightningModule):
         """
         batch_size = acoustic_tokens.size(0)
         acoustic_seq_len = acoustic_tokens.size(1)
+        seq_len = acoustic_seq_len
         device = acoustic_tokens.device
 
         # Encode text tokens (non-causal, bidirectional)
-        batch_size, seq_len = text_tokens.shape
         if sequence_lens is None:
-            sequence_lens_mask = torch.ones_like(text_tokens)
+            sequence_lens_mask = torch.ones_like(pitch)
             position_ids = None
         else:
             # Create mask [B, L]
@@ -161,7 +161,7 @@ class ALMModel(LightningModule):
             torch.full_like(bidirectional_mask, float("-inf"), dtype=torch.float),
         )
 
-        text_embeds = self.phonemes_embedding(text_tokens) + self.pitch_embedding(pitch)
+        text_embeds = self.phonemes_proj(phoneme_probs) + self.pitch_embedding(pitch)
         encoder_outputs = self.encoder(
             inputs_embeds=text_embeds,
             attention_mask=encoder_attention_mask,  # 4d mask overwrites internal transformers mask
@@ -221,7 +221,7 @@ class ALMModel(LightningModule):
         ----------
         batch: Container
             Container with inputs. Must contain:
-            - phoneme: [batch, total_seq_len] - combines reference and target phonemes
+            - phoneme: [batch, total_seq_len, vocab_size] - combines reference and target phonemes
             - pitch: [batch, total_seq_len] - combines reference and target pitch
             - ref_phoneme_len: [batch,] - length of reference sequences without left padding
             - phoneme_len [batch,] - length of target sequences without right padding
@@ -229,10 +229,12 @@ class ALMModel(LightningModule):
         """
         self.eval()
         batch = batch.to(self.device)
-        text_tokens = cast(torch.Tensor, batch["phoneme"])  # total phonemes
+        phoneme_probs = cast(
+            torch.Tensor, batch["phoneme"]
+        )  # phoneme probabilities for ref + target
         pitch = cast(torch.Tensor, batch["pitch"])  # total pitch
         acoustic_prompt = cast(torch.Tensor, batch["ref_acoustic_tokens"])
-        device = text_tokens.device
+        device = phoneme_probs.device
 
         # Setup logits processors
         logits_processor = LogitsProcessorList()
@@ -243,12 +245,16 @@ class ALMModel(LightningModule):
         if self.config.top_p < 1.0:
             logits_processor.append(TopPLogitsWarper(self.config.top_p))
 
-        batch_size, total_len = text_tokens.shape
+        batch_size, total_len, vocab_size = phoneme_probs.shape
         prompt_len = acoustic_prompt.shape[1]
 
         # 1. Encode full text once
-        target_lens = cast(torch.Tensor, batch["phoneme_len"])  # targets length wihtput padding on right
-        source_lens = cast(torch.Tensor, batch["ref_phoneme_len"])  # source length without padding on the left
+        target_lens = cast(
+            torch.Tensor, batch["phoneme_len"]
+        )  # targets length wihtput padding on right
+        source_lens = cast(
+            torch.Tensor, batch["ref_phoneme_len"]
+        )  # source length without padding on the left
         # left_padding[i] = prompt_len - source_lens[i]
         # right_padding[i] = total_len - prompt_len - target_lens[i]
         # Create mask [B, L]
@@ -266,7 +272,7 @@ class ALMModel(LightningModule):
             torch.zeros_like(bidirectional_mask, dtype=torch.float),
             torch.full_like(bidirectional_mask, float("-inf"), dtype=torch.float),
         )
-        text_embeds = self.phonemes_embedding(text_tokens) + self.pitch_embedding(pitch)
+        text_embeds = self.phonemes_proj(phoneme_probs) + self.pitch_embedding(pitch)
         encoder_outputs = self.encoder(
             inputs_embeds=text_embeds,
             position_ids=position_ids,
@@ -350,14 +356,16 @@ class ALMModel(LightningModule):
             outputs = self.decoder.model(
                 inputs_embeds=inputs_embeds,
                 past_key_values=past_key_values,
-                attention_mask=valid_mask[:, :(i + 1)],
-                position_ids=position_ids[:, i:(i + 1)],
+                attention_mask=valid_mask[:, : (i + 1)],
+                position_ids=position_ids[:, i : (i + 1)],
                 use_cache=True,
             )
             past_key_values = outputs.past_key_values
             last_hidden = outputs.last_hidden_state
 
-        batch["generated_acoustic_tokens"] = generated[:, prompt_len:, :].transpose(1, 2)  # B x 8 x time
+        batch["generated_acoustic_tokens"] = generated[:, prompt_len:, :].transpose(
+            1, 2
+        )  # B x 8 x time
         batch.save_to_npz(
             streams=["generated_acoustic_tokens"],
             out_dir=out_dir,
@@ -420,7 +428,7 @@ class ALMModel(LightningModule):
 
     def _step(self, batch: Container) -> torch.Tensor:
         batch = batch.to(self.device)
-        text_tokens = cast(torch.Tensor, batch["phoneme"])
+        phoneme_probs = cast(torch.Tensor, batch["phoneme"])
         pitch = cast(torch.Tensor, batch["pitch"])
         acoustic_tokens = cast(torch.Tensor, batch["acoustic_tokens"])
         sequence_lens = cast(torch.Tensor, batch["acoustic_tokens_len"])
@@ -428,7 +436,7 @@ class ALMModel(LightningModule):
         # Forward pass
         outputs = self.forward(
             acoustic_tokens=acoustic_tokens,
-            text_tokens=text_tokens,
+            phoneme_probs=phoneme_probs,
             pitch=pitch,
             sequence_lens=sequence_lens,
         )

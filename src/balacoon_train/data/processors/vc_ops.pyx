@@ -67,65 +67,40 @@ def resample_pitch(cnp.float32_t[:] pitch_arr, int target_length):
     return np.asarray(resampled)
 
 
-def resample_phonemes(cnp.int32_t[:] phonemes_arr, int target_length):
-    cdef int source_length = phonemes_arr.shape[0]
+def resample_phonemes(cnp.float32_t[:, :] phoneme_probs, cnp.int32_t[:, :] phoneme_indices, int target_length, int vocab_size):
+    """
+    Resamples phoneme probabilities to target_length.
+    Takes sparse representation (probs + indices) and accumulates them into dense matrix.
+    """
+    cdef int source_length = phoneme_probs.shape[0]
+    cdef int num_hyps = phoneme_probs.shape[1]
     
-    # Result array
-    cdef cnp.int32_t[:] resampled = np.zeros(target_length, dtype=np.int32)
+    # Result array (T x vocab_size)
+    cdef cnp.float32_t[:, :] resampled = np.zeros((target_length, vocab_size), dtype=np.float32)
     
-    # Circular-ish buffer to store pending phonemes.
-    # We use a fixed size array large enough to hold phonemes (worst case: source_length)
-    cdef cnp.int32_t[:] buffer = np.zeros(source_length, dtype=np.int32)
-    cdef int buf_head = 0
-    cdef int buf_tail = 0
-    
-    cdef int i, j
+    cdef int i, j, k
     cdef int start, end
     cdef double factor = <double>source_length / target_length
-    
-    cdef cnp.int32_t p
-    cdef cnp.int32_t last_segment_p
+    cdef int idx
+    cdef float val
     
     for i in range(target_length):
-        # Calculate window edges (equivalent to np.linspace logic)
         start = <int>round(i * factor)
         end = <int>round((i + 1) * factor)
         
         if start == end:
             end += 1
             
-        # Safety clamp
         if end > source_length:
             end = source_length
-        
-        # 1. Extract non-zero phonemes from this segment
-        last_segment_p = -1
-        
+            
+        # Sum probabilities from source frames
         for j in range(start, end):
-            p = phonemes_arr[j]
-            if p != 0:
-                # Compress contiguous duplicates within the segment
-                if p != last_segment_p:
-                    last_segment_p = p
-                    
-                    # 2. Add to buffer
-                    # Check against the last item currently in buffer to avoid merging across boundaries
-                    # (Matches: if len(unused_buffer) == 0 or unused_buffer[-1] != p)
-                    if buf_tail > buf_head:
-                        if buffer[buf_tail - 1] != p:
-                            buffer[buf_tail] = p
-                            buf_tail += 1
-                    else:
-                        # Buffer is empty, just add
-                        buffer[buf_tail] = p
-                        buf_tail += 1
-        
-        # 3. Assign to current frame from buffer
-        if buf_head < buf_tail:
-            resampled[i] = buffer[buf_head]
-            buf_head += 1
-        else:
-            resampled[i] = 0
+            for k in range(num_hyps):
+                idx = phoneme_indices[j, k]
+                val = phoneme_probs[j, k]
+                if idx >= 0 and idx < vocab_size:
+                    resampled[i, idx] += val
             
     return np.asarray(resampled)
 

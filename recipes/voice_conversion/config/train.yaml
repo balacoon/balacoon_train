@@ -32,10 +32,14 @@ data:
         max_len: 768   
         min_len: 96
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
-        name: "phoneme"
+        name: "phoneme_probs"
+        to_collate: false
         loader: "phoneme_npz"
-        pad_on_right: false
-        pad_value: ${phoneme_vocab_size}
+        type: "float32"
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "phoneme_indices"
+        to_collate: false
+        loader: "phoneme_npz"
         type: "int32"
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "pitch"
@@ -43,7 +47,7 @@ data:
         pad_on_right: false
         type: "int32"
       - cls: "balacoon_train.data.processors.vc_train_processor.VCTrainProcessor"
-        name: "acoustic_tokens"
+        phoneme_vocab_size: ${phoneme_vocab_size}
 
   seq_len:
     cls: "balacoon_train.data.seq_len_readers.npz_shape_reader.NpzShapeReader"

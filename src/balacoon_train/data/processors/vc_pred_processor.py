@@ -45,16 +45,21 @@ class VCPredProcessor(VCTrainProcessor):
             # check that target streams are in the container
             if any(
                 stream not in container
-                for stream in [self._config.tgt_text_name, self._config.tgt_pitch_name]
+                for stream in [
+                    self._config.tgt_phoneme_probs_name,
+                    self._config.tgt_phoneme_indices_name,
+                    self._config.tgt_pitch_name,
+                ]
             ):
                 return False
 
-        phonemes = container[self._config.tgt_text_name]  # frames
+        phoneme_probs = container[self._config.tgt_phoneme_probs_name]  # frames x vocabs
+        phoneme_indices = container[self._config.tgt_phoneme_indices_name]  # frames x vocabs
         pitch = container[self._config.tgt_pitch_name]  # frames
         # compute the target length of acoustic tokens
         expected_len = int(
             min(
-                round(phonemes.shape[0] / PHONEME_ACOUSTIC_RATIO),
+                round(phoneme_probs.shape[0] / PHONEME_ACOUSTIC_RATIO),
                 round(pitch.shape[0] / PITCH_ACOUSTIC_RATIO),
             )
         )
@@ -69,8 +74,14 @@ class VCPredProcessor(VCTrainProcessor):
         # Resampling is necessary because phonemes/pitch and acoustic tokens operate at different frame rates.
         # We need to align them to the same length (acoustic tokens length) for the model.
         phonemes = torch.from_numpy(
-            resample_phonemes(phonemes.numpy().astype(np.int32), expected_len)
+            resample_phonemes(
+                phoneme_probs.numpy().astype(np.float32),
+                phoneme_indices.numpy().astype(np.int32),
+                expected_len,
+                self._config.phoneme_vocab_size,
+            )
         )
+
         pitch = torch.from_numpy(
             resample_pitch(pitch.numpy().astype(np.float32), expected_len)
         ).int()
@@ -79,7 +90,7 @@ class VCPredProcessor(VCTrainProcessor):
         assert phonemes.shape[0] == expected_len and pitch.shape[0] == expected_len
 
         # put back tgt pitch and tgt phonemes to container
-        container[self._config.tgt_text_name] = phonemes
+        container[self._config.tgt_name] = phonemes
         container[self._config.tgt_pitch_name] = pitch
         return True
 
@@ -94,25 +105,35 @@ class VCPredProcessor(VCTrainProcessor):
         ref_acoustic_tokens.shape[0] = 6 (x x x 1 2 3 - reference and the padding)
         pitch_len[i] = 2 (6, 1 - target pitch values without padding)
         """
+        # collated by npz processors
         ref_pitch = cast(torch.Tensor, batch[self._config.pitch_name])
         tgt_pitch = cast(torch.Tensor, batch[self._config.tgt_pitch_name])
         pitch = torch.cat([ref_pitch, tgt_pitch], dim=1)
 
-        ref_phonemes = cast(torch.Tensor, batch[self._config.text_name])
-        tgt_phonemes = cast(torch.Tensor, batch[self._config.tgt_text_name])
+        # collate reference phonemes (config.name)
+        super().collate_custom(batch_elements, batch, self._config.name, pad_on_right=False)
+        # collate target phonemes
+        super().collate_custom(batch_elements, batch, self._config.tgt_name, pad_on_right=True)
+        # combine reference adn target
+        ref_phonemes = cast(torch.Tensor, batch[self._config.name])
+        tgt_phonemes = cast(torch.Tensor, batch[self._config.tgt_name])
         phonemes = torch.cat([ref_phonemes, tgt_phonemes], dim=1)
 
         batch[self._config.tgt_pitch_name] = pitch
-        batch[self._config.tgt_text_name] = phonemes
+        batch[self._config.tgt_name] = phonemes
 
 
 @dataclass
 class VCPredProcessorConfig(VCTrainProcessorConfig):
     cls: str = VCPredProcessor.__module__ + "." + VCPredProcessor.__name__
-    name: str = "ref_acoustic_tokens"  # primary data stream, which we align to
-    text_name: str = "ref_phoneme"  # stream of phonemes from phoneme recognizer
+    acoustic_tokens_name: str = "ref_acoustic_tokens"  # primary data stream, which we align to
+    phoneme_probs_name: str = "ref_phoneme_probs"  # stream of phonemes from phoneme recognizer
+    phoneme_indices_name: str = "ref_phoneme_indices"  # stream of phonemes from phoneme recognizer
     pitch_name: str = "ref_pitch"  # stream of pitch from pitch estimator
+    name: str = "ref_phoneme"  # stream of phonemes from phoneme recognizer
 
     max_seq_len: int = 768
-    tgt_text_name: str = "phoneme"
+    tgt_phoneme_probs_name: str = "phoneme_probs"  # stream of phonemes from phoneme recognizer
+    tgt_phoneme_indices_name: str = "phoneme_indices"  # stream of phonemes from phoneme recognizer
     tgt_pitch_name: str = "pitch"
+    tgt_name: str = "phoneme"

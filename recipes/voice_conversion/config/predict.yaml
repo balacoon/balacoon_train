@@ -43,17 +43,28 @@ data:
         min_len: 64  # at least 3 seconds needed to use as prompt
   
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
-        name: "ref_phoneme"
-        npz_name: "phoneme"
+        name: "ref_phoneme_probs"
+        npz_name: "phoneme_probs"
         loader: "ref_phoneme_npz"
-        pad_on_right: false
-        pad_value: ${phoneme_vocab_size}
-        type: "int32"
+        to_collate: false
+        type: "float32"
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
-        name: "phoneme"
-        loader: "phoneme_npz"
-        pad_value: ${phoneme_vocab_size}
+        name: "ref_phoneme_indices"
+        npz_name: "phoneme_indices"
+        loader: "ref_phoneme_npz"
+        to_collate: false
         type: "int32"
+
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "phoneme_probs"
+        loader: "phoneme_npz"
+        type: "float32"
+        to_collate: false
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "phoneme_indices"
+        loader: "phoneme_npz"
+        type: "int32"
+        to_collate: false
 
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "ref_pitch"
@@ -67,7 +78,7 @@ data:
         type: "int32"
 
       - cls: "balacoon_train.data.processors.vc_pred_processor.VCPredProcessor"
-        name: "ref_acoustic_tokens"
+        phoneme_vocab_size: ${phoneme_vocab_size}
         max_seq_len: ${max_seq_len}
 
   seq_len:

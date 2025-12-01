@@ -40,13 +40,20 @@ class VCTrainProcessor(Processor):
             # check that all input streams are actually in the container
             if any(
                 stream not in container
-                for stream in [self._config.name, self._config.text_name, self._config.pitch_name]
+                for stream in [
+                    self._config.acoustic_tokens_name,
+                    self._config.phoneme_probs_name,
+                    self._config.phoneme_indices_name,
+                    self._config.pitch_name,
+                ]
             ):
                 return False
 
-        phonemes = container[self._config.text_name]  # frames
         pitch = container[self._config.pitch_name]  # frames
-        acoustic_tokens = container[self._config.name]  # frames x vocabs
+        phoneme_probs = container[self._config.phoneme_probs_name]  # frames x vocabs
+        phoneme_indices = container[self._config.phoneme_indices_name]  # frames x vocabs
+        assert phoneme_probs.shape[0] == phoneme_indices.shape[0]
+        acoustic_tokens = container[self._config.acoustic_tokens_name]  # frames x vocabs
 
         # check that the ratio between rates is as expected
         expected_len = acoustic_tokens.shape[0]
@@ -59,10 +66,10 @@ class VCTrainProcessor(Processor):
                     )
                 )
                 return False
-            if abs(phonemes.shape[0] / float(expected_len) - PHONEME_ACOUSTIC_RATIO) > 0.2:
+            if abs(phoneme_probs.shape[0] / float(expected_len) - PHONEME_ACOUSTIC_RATIO) > 0.2:
                 logging.warning(
                     "Mismatch between shapes of phonemes and acoustic tokens: {} vs {}".format(
-                        phonemes.shape[0], expected_len
+                        phoneme_probs.shape[0], expected_len
                     )
                 )
                 return False
@@ -74,19 +81,23 @@ class VCTrainProcessor(Processor):
         # align phonemes and pitch to the same length as acoustic tokens
         # This ensures that for every acoustic token we have a corresponding phoneme and pitch value,
         # which are used as conditions in the model.
-        phonemes = torch.from_numpy(
-            resample_phonemes(phonemes.numpy().astype(np.int32), expected_len)
-        )
         pitch = torch.from_numpy(
             resample_pitch(pitch.numpy().astype(np.float32), expected_len)
         ).int()
+        phonemes = torch.from_numpy(
+            resample_phonemes(
+                phoneme_probs.numpy().astype(np.float32),
+                phoneme_indices.numpy().astype(np.int32),
+                expected_len,
+                self._config.phoneme_vocab_size,
+            )
+        )
 
         # verify that resampling worked
         assert phonemes.shape[0] == expected_len and pitch.shape[0] == expected_len
-
         # put tensors back to the container so they can be collated by respected npz processors
         pitch = self.shift_pitch(pitch)
-        container[self._config.text_name] = phonemes
+        container[self._config.name] = phonemes  # T x vocab_size
         container[self._config.pitch_name] = pitch
         return True
 
@@ -113,13 +124,20 @@ class VCTrainProcessor(Processor):
             pl = np.random.randint(min_prompt_len, max_prompt_len + 1)
             prompt_len.append(pl)
         batch["prompt_len"] = torch.tensor(prompt_len, dtype=torch.int)
+        super().collate(batch_elements, batch)  # collates phonemes
 
 
 @dataclass
 class VCTrainProcessorConfig(ProcessorConfig):
     cls: str = VCTrainProcessor.__module__ + "." + VCTrainProcessor.__name__
-    name: str = "acoustic_tokens"  # primary data stream, which we align to
-    text_name: str = "phoneme"  # stream of phonemes from phoneme recognizer
+    acoustic_tokens_name: str = "acoustic_tokens"  # primary data stream, which we align to
     pitch_name: str = "pitch"  # stream of pitch from pitch estimator
-
     pitch_val_shift: int = 30  # add this to pitch values to make sure that they suit as indexes
+    phoneme_vocab_size: int = 37
+    pad_value: float = 0.0
+    pad_on_right: bool = False
+
+    # keys to load phoneme info from npz
+    phoneme_probs_name: str = "phoneme_probs"
+    phoneme_indices_name: str = "phoneme_indices"
+    name: str = "phoneme"

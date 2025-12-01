@@ -205,6 +205,26 @@ class Processor(ABC):
         return batch, tensor_lens
 
     def collate(self, batch_elements: List[Container], batch: Container):
+        self.collate_custom(
+            batch_elements,
+            batch,
+            self._config.name,
+            self._config.axis,
+            self._config.pad_value,
+            self._config.pad_on_right,
+            self._config.to_collate,
+        )
+
+    def collate_custom(
+        self,
+        batch_elements: List[Container],
+        batch: Container,
+        name: str,
+        axis: int = 0,
+        pad_value: float = 0.0,
+        pad_on_right: bool = True,
+        to_collate: bool = True,
+    ):
         """
         Collates data extracted by this processor. From each batch element
         takes a pytorch tensor previously extracted with `process` method,
@@ -213,23 +233,23 @@ class Processor(ABC):
         but for some processors should be overwritten (for ex. disabled for
         data adjusters)
         """
-        if not self._config.to_collate:
+        if not to_collate:
             # nothing to do here
             return
         # collation happens only on output of processors, i.e. torch tensors,
         # other data (NpzFile, LinguisticUtterance) should be dropped by now
-        tensors = [cast(torch.Tensor, x[self._config.name]) for x in batch_elements]
+        tensors = [cast(torch.Tensor, x[name]) for x in batch_elements]
         combined, seq_len = self.pad_and_stack(
             tensors,
-            axis=self._config.axis,
-            val=self._config.pad_value,
-            on_right=self._config.pad_on_right,
+            axis=axis,
+            val=pad_value,
+            on_right=pad_on_right,
         )
         # store both batch and sequence length to a container.
         # sequence length might be needed to mask textual encoders
         # in the padded regions
-        batch[self._config.name] = combined
-        batch[self._config.name + "_len"] = seq_len
+        batch[name] = combined
+        batch[name + "_len"] = seq_len
 
     def _get_torch_type(self) -> torch.dtype:
         """
