@@ -103,12 +103,16 @@ class NpzStreamProcessor(Processor):
                 )
                 return False
             # add fake data for validation
-            container[self._config.name] = TensorMock(shape)
-        else:
-            arr = npz[npz_stream_name]
-            if self._config.transpose:
-                arr = arr.transpose()
-            container[self._config.name] = torch.tensor(arr, dtype=self._get_torch_type())
+            if self._config.mock:
+                container[self._config.name] = TensorMock(shape)
+                return True
+
+        arr = npz[npz_stream_name]
+        if self._config.transpose:
+            arr = arr.transpose()
+        if self._config.torch:
+            arr = torch.tensor(arr, dtype=self._get_torch_type())
+        container[self._config.name] = arr
         return True
 
 
@@ -127,3 +131,5 @@ class NpzStreamProcessorConfig(ProcessorConfig):
     npz_name: str = ""  # if not specified `name` is used
     name: str = "???"  # data stream in npz archive to extract
     transpose: bool = False  # whether to transpose the data
+    torch: bool = True  # whether to convert data to torch tensor
+    mock: bool = True  # whether to mock data during validation
