@@ -417,7 +417,7 @@ class ALMModel(LightningModule):
             # We mask everything from 0 up to prompt end.
             padding_len = seq_len - sequence_lens[i]
             mask_end = padding_len + prompt_len[i]
-            targets[:, :mask_end, :] = -1
+            targets[i, :mask_end, :] = -1
 
         # Flatten for loss computation
         logits_flat = logits.reshape(-1, vocab_size)
