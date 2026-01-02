@@ -100,6 +100,15 @@ class VCALMModel(LightningModule):
             self.config.dec_dim, (self.config.dec_vocab_size + 1) * self.config.dec_vocabs_num
         )
 
+        # set up logits processor for sampling
+        self.logits_processor = LogitsProcessorList()
+        if self.config.temperature != 1.0:
+            self.logits_processor.append(TemperatureLogitsWarper(self.config.temperature))
+        if self.config.top_k > 0:
+            self.logits_processor.append(TopKLogitsWarper(self.config.top_k))
+        if self.config.top_p < 1.0:
+            self.logits_processor.append(TopPLogitsWarper(self.config.top_p))
+
     def forward(
         self,
         acoustic_tokens: torch.Tensor,
@@ -233,7 +242,7 @@ class VCALMModel(LightningModule):
             v_logits = logits[:, 0, v, :]  # batch x vocab_size
             # we need to pass `input_ids` to logits processor, but none of those that we use
             # actually requires it, so we pass None
-            v_logits = logits_processor(None, v_logits)
+            v_logits = self.logits_processor(None, v_logits)
             probs = F.softmax(v_logits, dim=-1)
             token = torch.multinomial(probs, num_samples=1)  # [B, 1]
             next_tokens.append(token)
@@ -268,15 +277,6 @@ class VCALMModel(LightningModule):
         pitch = cast(torch.Tensor, batch["pitch"])  # total pitch
         acoustic_prompt = cast(torch.Tensor, batch["ref_acoustic_tokens"])
         device = phoneme_probs.device
-
-        # Setup logits processors
-        logits_processor = LogitsProcessorList()
-        if self.config.temperature != 1.0:
-            logits_processor.append(TemperatureLogitsWarper(self.config.temperature))
-        if self.config.top_k > 0:
-            logits_processor.append(TopKLogitsWarper(self.config.top_k))
-        if self.config.top_p < 1.0:
-            logits_processor.append(TopPLogitsWarper(self.config.top_p))
 
         batch_size, total_len, vocab_size = phoneme_probs.shape
         prompt_len = acoustic_prompt.shape[1]
