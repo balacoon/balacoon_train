@@ -180,7 +180,7 @@ class VCALMModel(LightningModule):
         # Embed each vocabulary separately and sum
         # first shift acoustic tokens to the right, because each for Nth input we should use N-1th acoustic token
         shifted_acoustic_tokens = torch.nn.functional.pad(
-            acoustic_tokens, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size + 1)
+            acoustic_tokens, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size)
         )
         shifted_acoustic_tokens = shifted_acoustic_tokens[:, :-1, :]
         acoustic_embeds_list = []
@@ -321,7 +321,7 @@ class VCALMModel(LightningModule):
         acoustic_embeds_list = []
         # pad acoustic prompt on the left by 1, so at prefill we are already generating target tokens
         shifted_acoustic_prompt = torch.nn.functional.pad(
-            acoustic_prompt, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size + 1)
+            acoustic_prompt, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size)
         )
         for i, emb in enumerate(self.acoustic_embedding):
             acoustic_embeds_list.append(emb(shifted_acoustic_prompt[:, :, i]))
