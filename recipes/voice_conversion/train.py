@@ -5,7 +5,7 @@ import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
 from balacoon_train.config import Config
 from balacoon_train.data import create_fold_data_loader
-from balacoon_train.alm import ALMModel
+from balacoon_train.vc_alm import VCALMModel
 
 
 torch.set_float32_matmul_precision("medium")
@@ -75,8 +75,8 @@ def main():
         )
 
     # Create model
-    # Pass config.model so ALMModel uses parameters from the 'model' section of YAML
-    model = ALMModel(config.model)
+    # Pass config.model so VCALMModel uses parameters from the 'model' section of YAML
+    model = VCALMModel(config.model)
 
     # Initialize Trainer
     # When using custom data sharding (stride/strides_num), we must disable replace_sampler_ddp

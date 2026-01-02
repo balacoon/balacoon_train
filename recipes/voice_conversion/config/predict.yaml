@@ -90,5 +90,5 @@ data:
   num_workers: 8
 
 model:
-  cls: "balacoon_train.alm.ALMModel"
+  cls: "balacoon_train.vc_alm.VCALMModel"
   max_position_embeddings: ${max_seq_len}

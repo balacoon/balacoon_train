@@ -25,7 +25,7 @@ from balacoon_train.config import Config
 from balacoon_train.data.container import Container
 
 
-class ALMModel(LightningModule):
+class VCALMModel(LightningModule):
     """
     Acoustic Language Model using Llama3 architecture.
 
@@ -45,7 +45,7 @@ class ALMModel(LightningModule):
             Configuration object containing model hyperparameters
         """
         super().__init__()
-        config.add_missing(ALMConfig)
+        config.add_missing(VCALMConfig)
         self.config = config
 
         self.phonemes_proj = nn.Linear(self.config.phonemes_num, self.config.enc_dim)
@@ -178,9 +178,14 @@ class ALMModel(LightningModule):
         # Embed acoustic tokens
         # acoustic_tokens shape: [batch, acoustic_seq_len, vocabs_num]
         # Embed each vocabulary separately and sum
+        # first shift acoustic tokens to the right, because each for Nth input we should use N-1th acoustic token
+        shifted_acoustic_tokens = torch.nn.functional.pad(
+            acoustic_tokens, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size + 1)
+        )
+        shifted_acoustic_tokens = shifted_acoustic_tokens[:, :-1, :]
         acoustic_embeds_list = []
         for i, emb in enumerate(self.acoustic_embedding):
-            acoustic_embeds_list.append(emb(acoustic_tokens[:, :, i]))
+            acoustic_embeds_list.append(emb(shifted_acoustic_tokens[:, :, i]))
         acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(dim=2)
 
         # Add encoder embeddings to acoustic embeddings
@@ -207,6 +212,34 @@ class ALMModel(LightningModule):
         output = {"logits": logits, "encoder_hidden_states": encoder_hidden_states}
 
         return output
+
+    @torch.no_grad()
+    def sample_token(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Samples tokens from logits.
+        Inputs:
+            logits: [batch, 1, num_vocabs * vocab_size]
+        Returns:
+            next_acoustic_token: [batch, 1, num_vocabs]
+        """
+        batch_size = logits.shape[0]
+        logits = logits.view(
+            batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size + 1
+        )
+
+        # Sample next token (all codebooks in parallel)
+        next_tokens = []
+        for v in range(self.config.dec_vocabs_num):
+            v_logits = logits[:, 0, v, :]  # batch x vocab_size
+            # we need to pass `input_ids` to logits processor, but none of those that we use
+            # actually requires it, so we pass None
+            v_logits = logits_processor(None, v_logits)
+            probs = F.softmax(v_logits, dim=-1)
+            token = torch.multinomial(probs, num_samples=1)  # [B, 1]
+            next_tokens.append(token)
+
+        next_acoustic_token = torch.cat(next_tokens, dim=1).unsqueeze(1)  # [B, 1, vocabs_num]
+        return next_acoustic_token
 
     @torch.no_grad()
     def generate(
@@ -282,22 +315,22 @@ class ALMModel(LightningModule):
         # [batch, total_len, dec_dim]
         text_embeddings = self.text_projection(encoder_outputs.last_hidden_state)
 
-        # 2. Setup generation
-        generated = acoustic_prompt.clone()  # [batch, prompt_len, vocabs_num]
-        past_key_values = None
-
         # 3. Prefill prompt
         # We feed the prompt. The last token of prompt + aligned text predicts the first new token.
         # Embed prompt
         acoustic_embeds_list = []
+        # pad acoustic prompt on the left by 1, so at prefill we are already generating target tokens
+        shifted_acoustic_prompt = torch.nn.functional.pad(
+            acoustic_prompt, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size + 1)
+        )
         for i, emb in enumerate(self.acoustic_embedding):
-            acoustic_embeds_list.append(emb(acoustic_prompt[:, :, i]))
+            acoustic_embeds_list.append(emb(shifted_acoustic_prompt[:, :, i]))
         acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(
             dim=2
-        )  # [B, prompt_len, dec_dim]
+        )  # [B, prompt_le + 1, dec_dim]
 
         # Align text embeddings: use corresponding slice
-        current_text_embeds = text_embeddings[:, :prompt_len, :]
+        current_text_embeds = text_embeddings[:, : (prompt_len + 1), :]
 
         # Combine
         inputs_embeds = acoustic_embeds + current_text_embeds
@@ -305,40 +338,25 @@ class ALMModel(LightningModule):
         # Forward prompt
         outputs = self.decoder.model(
             inputs_embeds=inputs_embeds,
-            past_key_values=past_key_values,
-            attention_mask=valid_mask[:, :prompt_len],
-            position_ids=position_ids[:, :prompt_len],
+            past_key_values=None,
+            attention_mask=valid_mask[:, : prompt_len + 1],
+            position_ids=position_ids[:, : prompt_len + 1],
             use_cache=True,
         )
         past_key_values = outputs.past_key_values
         last_hidden = outputs.last_hidden_state[:, -1:, :]  # [B, 1, hidden]
 
         # 4. Autoregressive loop
-        # We start generating from index `prompt_len` up to `total_len`
-        for i in range(prompt_len, total_len):
+        # We start generating from index `prompt_len + 1` up to `total_len`
+        generated_tokens_lst = []
+        for i in range(prompt_len + 1, total_len):
             # Project to logits
             logits = self.acoustic_projection(last_hidden)  # [B, 1, num_vocabs * vocab_size]
-            logits = logits.view(
-                batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size + 1
-            )
-
-            # Sample next token (all codebooks in parallel)
-            next_tokens = []
-            for v in range(self.config.dec_vocabs_num):
-                v_logits = logits[:, 0, v, :]  # batch x vocab_size
-                v_logits = logits_processor(generated[:, :, v], v_logits)
-                probs = F.softmax(v_logits, dim=-1)
-                token = torch.multinomial(probs, num_samples=1)  # [B, 1]
-                next_tokens.append(token)
-
-            next_acoustic_token = torch.cat(next_tokens, dim=1).unsqueeze(1)  # [B, 1, vocabs_num]
-
-            # Append to result
-            generated = torch.cat([generated, next_acoustic_token], dim=1)
+            next_acoustic_token = self.sample_token(logits)  # [B, 1, vocabs_num]
+            generated_tokens_lst.append(next_acoustic_token)
 
             # Prepare input for next step
             # Next input is: newly generated token + text embedding at current pos `i`
-
             # Embed new acoustic token
             next_acoustic_embeds_list = []
             for v_idx, emb in enumerate(self.acoustic_embedding):
@@ -363,9 +381,13 @@ class ALMModel(LightningModule):
             past_key_values = outputs.past_key_values
             last_hidden = outputs.last_hidden_state
 
-        batch["generated_acoustic_tokens"] = generated[:, prompt_len:, :].transpose(
-            1, 2
-        )  # B x 8 x time
+        # sample the very last token after the loop
+        logits = self.acoustic_projection(last_hidden)
+        next_acoustic_token = self.sample_token(logits)
+        generated_tokens_lst.append(next_acoustic_token)
+
+        generated_tokens = torch.cat(generated_tokens_lst, dim=1)  # batch x gen_len x vocabs_num
+        batch["generated_acoustic_tokens"] = generated_tokens.transpose(1, 2)  # B x 8 x time
         batch.save_to_npz(
             streams=["generated_acoustic_tokens"],
             out_dir=out_dir,
@@ -382,7 +404,10 @@ class ALMModel(LightningModule):
         sequence_lens: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Calculate loss for next token prediction (no staggered shift).
+        Calculate loss for next token prediction.
+        There is direct correspondence between phoneme posteriograms (logits)
+        and acoustic tokens. So we don't need to shift anything.
+        When acoustic tokens are prepared to be input for the model, then they are shifted by 1.
 
         Parameters
         ----------
@@ -400,13 +425,6 @@ class ALMModel(LightningModule):
         loss: torch.Tensor
             Cross entropy loss
         """
-        # Remove the last logit as we don't have a target for it (it predicts T+1)
-        logits = logits[:, :-1, :, :]  # [B, T-1, V_num, V_size]
-
-        # Remove the first token from targets as it's the input for the first prediction
-        # Targets are shifted by 1 relative to input
-        targets = acoustic_tokens[:, 1:, :]  # [B, T-1, V_num]
-
         batch_size, seq_len, vocabs_num, vocab_size = logits.shape
         for i in range(batch_size):
             # Mask out the prompt region in targets so we don't compute loss on it.
@@ -417,11 +435,11 @@ class ALMModel(LightningModule):
             # We mask everything from 0 up to prompt end.
             padding_len = seq_len - sequence_lens[i]
             mask_end = padding_len + prompt_len[i]
-            targets[i, :mask_end, :] = -1
+            acoustic_tokens[i, :mask_end, :] = -1
 
         # Flatten for loss computation
         logits_flat = logits.reshape(-1, vocab_size)
-        targets_flat = targets.reshape(-1).long()
+        targets_flat = acoustic_tokens.reshape(-1).long()
 
         loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-1)
         return loss
@@ -533,8 +551,8 @@ class ALMModel(LightningModule):
 
 
 @dataclass
-class ALMConfig:
-    cls: str = ALMModel.__module__ + "." + ALMModel.__name__
+class VCALMConfig:
+    cls: str = VCALMModel.__module__ + "." + VCALMModel.__name__
     # 768 / 21.5 = 35 seconds
     max_position_embeddings: int = 768
 

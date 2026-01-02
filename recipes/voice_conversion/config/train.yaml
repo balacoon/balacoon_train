@@ -58,7 +58,7 @@ data:
   num_workers: 8
 
 model:
-  cls: "balacoon_train.alm.ALMModel"
+  cls: "balacoon_train.vc_alm.VCALMModel"
   phonemes_num: ${phoneme_vocab_size}
   dec_vocab_size: ${acoustic_vocab_size}
   num_steps: 500000  # 10 epochs for libritts

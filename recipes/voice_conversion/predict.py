@@ -4,7 +4,7 @@ import torch
 from tqdm import tqdm
 from balacoon_train.config import Config
 from balacoon_train.data import create_fold_data_loader
-from balacoon_train.alm import ALMModel
+from balacoon_train.vc_alm import VCALMModel
 
 
 def main():
@@ -43,9 +43,9 @@ def main():
     )
 
     # Create model
-    # We need to pass config.model to load_from_checkpoint because ALMModel
+    # We need to pass config.model to load_from_checkpoint because VCALMModel
     # doesn't save hyperparameters automatically
-    model = ALMModel.load_from_checkpoint(args.ckpt, config=config.model)
+    model = VCALMModel.load_from_checkpoint(args.ckpt, config=config.model)
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model.to(device)
