@@ -100,6 +100,15 @@ class TTSALMModel(LightningModule):
         )
         self.eop_projection = nn.Linear(self.config.dec_dim, 1)
 
+        # logits processor for sampling during generation
+        self.logits_processor = LogitsProcessorList()
+        if self.config.temperature != 1.0:
+            self.logits_processor.append(TemperatureLogitsWarper(self.config.temperature))
+        if self.config.top_k > 0:
+            self.logits_processor.append(TopKLogitsWarper(self.config.top_k))
+        if self.config.top_p < 1.0:
+            self.logits_processor.append(TopPLogitsWarper(self.config.top_p))
+
     def forward(
         self,
         acoustic_tokens: torch.Tensor,
@@ -203,9 +212,14 @@ class TTSALMModel(LightningModule):
         # Embed acoustic tokens
         # acoustic_tokens shape: [batch, acoustic_seq_len, vocabs_num]
         # Embed each vocabulary separately and sum
+        # shift acoustic tokens to the right, because each for Nth input we should use N-1th acoustic token
+        shifted_acoustic_tokens = torch.nn.functional.pad(
+            acoustic_tokens, (0, 0, 1, 0), mode="constant", value=(self.config.dec_vocab_size)
+        )
+        shifted_acoustic_tokens = shifted_acoustic_tokens[:, :-1, :]
         acoustic_embeds_list = []
         for i, emb in enumerate(self.acoustic_embedding):
-            acoustic_embeds_list.append(emb(acoustic_tokens[:, :, i]))
+            acoustic_embeds_list.append(emb(shifted_acoustic_tokens[:, :, i]))
         acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(dim=2)
 
         # 6. combine upsampled phonemes and acoustic tokens embeddings,
@@ -231,6 +245,34 @@ class TTSALMModel(LightningModule):
         return logits, eop_logits
 
     @torch.no_grad()
+    def sample_token(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Samples tokens from logits.
+        Inputs:
+            logits: [batch, 1, num_vocabs * vocab_size]
+        Returns:
+            next_acoustic_token: [batch, 1, num_vocabs]
+        """
+        batch_size = logits.shape[0]
+        logits = logits.view(
+            batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size + 1
+        )
+
+        # Sample next token (all codebooks in parallel)
+        next_tokens = []
+        for v in range(self.config.dec_vocabs_num):
+            v_logits = logits[:, 0, v, :]  # batch x vocab_size
+            # we need to pass `input_ids` to logits processor, but none of those that we use
+            # actually requires it, so we pass None
+            v_logits = self.logits_processor(None, v_logits)
+            probs = F.softmax(v_logits, dim=-1)
+            token = torch.multinomial(probs, num_samples=1)  # [B, 1]
+            next_tokens.append(token)
+
+        next_acoustic_token = torch.cat(next_tokens, dim=1).unsqueeze(1)  # [B, 1, vocabs_num]
+        return next_acoustic_token
+
+    @torch.no_grad()
     def generate(
         self,
         batch: Container,
@@ -238,161 +280,194 @@ class TTSALMModel(LightningModule):
     ) -> None:
         """
         Autoregressive generation of acoustic tokens.
+        At each step, we predict if we switch to the next encoded phoneme.
 
         Parameters
         ----------
         batch: Container
             Container with inputs. Must contain:
-            - phoneme: [batch, total_seq_len, vocab_size] - combines reference and target phonemes
-            - pitch: [batch, total_seq_len] - combines reference and target pitch
-            - ref_phoneme_len: [batch,] - length of reference sequences without left padding
-            - phoneme_len [batch,] - length of target sequences without right padding
-            - ref_acoustic_tokens: [batch, prompt_len, vocabs_num] - contains only reference acoustic tokens
+            - prompt_acoustic_tokens: [batch, prompt_tokens_len, vocabs_num] - used as prompt for decoder
+            - prompt_phonemes: [batch, prompt_phonemes_len] - encoded together with `phonemes`, upsampled, used prompt to decoder
+            - prompt_phoneme_indices: [batch, prompt_tokens_len] - used for upsampling the `prompt_phonemes` to match `prompt_acoustic_tokens`
+            - prompt_tokens_len: [batch,] - actual number of frames (acoustic tokens) in the prompt per batch element, padding on the left
+            - prompt_phonemes_len: [batch,] - actual number of phonemes in the prompt per batch element, padding on the left
+            - phonemes: [batch, phonemes_len] - target phonemes to generate, padded on the right
+            - phonemes_len: [batch,] - actual number of phonemes in the target utterance per batch element, padded on the right
+
         """
         self.eval()
         batch = batch.to(self.device)
-        phoneme_probs = cast(
-            torch.Tensor, batch["phoneme"]
-        )  # phoneme probabilities for ref + target
-        pitch = cast(torch.Tensor, batch["pitch"])  # total pitch
-        acoustic_prompt = cast(torch.Tensor, batch["ref_acoustic_tokens"])
-        device = phoneme_probs.device
 
-        # Setup logits processors
-        logits_processor = LogitsProcessorList()
-        if self.config.temperature != 1.0:
-            logits_processor.append(TemperatureLogitsWarper(self.config.temperature))
-        if self.config.top_k > 0:
-            logits_processor.append(TopKLogitsWarper(self.config.top_k))
-        if self.config.top_p < 1.0:
-            logits_processor.append(TopPLogitsWarper(self.config.top_p))
+        # 1. first we need to run encoding of the phonemes using encoder.
+        # we concatenate `prompt_phonemes` and `phonemes` together,
+        # create mask based on `prompt_phoneme_len` and `phoneme_len` and run encoder.
+        prompt_phonemes = batch["prompt_phonemes"]
+        text_prompt_len = prompt_phonemes.shape[1]
+        phonemes = batch["phonemes"]
+        prompt_phoneme_len = batch["prompt_phonemes_len"]
+        phoneme_len = batch["phonemes_len"]
 
-        batch_size, total_len, vocab_size = phoneme_probs.shape
-        prompt_len = acoustic_prompt.shape[1]
-
-        # 1. Encode full text once
-        target_lens = cast(
-            torch.Tensor, batch["phoneme_len"]
-        )  # targets length wihtput padding on right
-        source_lens = cast(
-            torch.Tensor, batch["ref_phoneme_len"]
-        )  # source length without padding on the left
-        # left_padding[i] = prompt_len - source_lens[i]
-        # right_padding[i] = total_len - prompt_len - target_lens[i]
-        # Create mask [B, L]
-        idx = torch.arange(total_len, device=device).unsqueeze(0)
-        left_pad = prompt_len - source_lens
-        right_pad = total_len - prompt_len - target_lens
-        valid_mask = (idx >= left_pad.unsqueeze(1)) & (idx < (total_len - right_pad.unsqueeze(1)))
+        phonemes_input = torch.cat([prompt_phonemes, phonemes], dim=1)
+        text_len = phonemes_input.shape[1]
+        idx = torch.arange(text_len, device=self.device).unsqueeze(0)
+        left_pad = text_prompt_len - prompt_phoneme_len
+        right_pad = text_len - text_prompt_len - phoneme_len
+        valid_mask = (idx >= left_pad.unsqueeze(1)) & (idx < (text_len - right_pad.unsqueeze(1)))
         position_ids = valid_mask.cumsum(dim=1) - 1
         position_ids.clamp_(min=0)
-
         bidirectional_mask = valid_mask.unsqueeze(1).unsqueeze(2)
-        bidirectional_mask = bidirectional_mask.expand(batch_size, 1, total_len, total_len)
+        batch_size = phonemes_input.shape[0]
+        bidirectional_mask = bidirectional_mask.expand(batch_size, 1, text_len, text_len)
         encoder_attention_mask = torch.where(
             bidirectional_mask.bool(),
             torch.zeros_like(bidirectional_mask, dtype=torch.float),
             torch.full_like(bidirectional_mask, float("-inf"), dtype=torch.float),
         )
-        text_embeds = self.phonemes_proj(phoneme_probs) + self.pitch_embedding(pitch)
+
+        phonemes_embeds = self.phonemes_emb(phonemes_input)  # [batch_size, seq_len, enc_dim]
         encoder_outputs = self.encoder(
-            inputs_embeds=text_embeds,
+            inputs_embeds=phonemes_embeds,
+            attention_mask=encoder_attention_mask,  # 4d mask overwrites internal transformers mask
             position_ids=position_ids,
-            attention_mask=encoder_attention_mask,
             return_dict=True,
         )
-        # [batch, total_len, dec_dim]
-        text_embeddings = self.text_projection(encoder_outputs.last_hidden_state)
+        encoder_hidden_states = encoder_outputs.last_hidden_state  # [batch_size, seq_len, enc_dim]
+        encoder_projected = self.text_projection(
+            encoder_hidden_states
+        )  # [batch_size, seq_len, dec_dim]
 
-        # 2. Setup generation
-        generated = acoustic_prompt.clone()  # [batch, prompt_len, vocabs_num]
-        past_key_values = None
+        # 2. take only prompt part of encoded phonemes and upsample it for decoder
+        prompt_encoder_projected = encoder_projected[:, :text_prompt_len, :]
+        prompt_phoneme_indices = batch["prompt_phoneme_indices"]
+        indices_expanded = prompt_phoneme_indices.unsqueeze(-1).expand(
+            -1, -1, prompt_encoder_projected.size(-1)
+        )
+        prompt_phonemes_up_embeds = torch.gather(
+            prompt_encoder_projected, dim=1, index=indices_expanded
+        )
+        # take very first phoneme of the target text and use it as input for decoder
+        prompt_phonemes_up_embeds = torch.cat(
+            [
+                prompt_phonemes_up_embeds,
+                encoder_projected[:, text_prompt_len : text_prompt_len + 1, :],
+            ],
+            dim=1,
+        )
 
-        # 3. Prefill prompt
-        # We feed the prompt. The last token of prompt + aligned text predicts the first new token.
-        # Embed prompt
-        acoustic_embeds_list = []
+        # 3. PREFILL STAGE: embed prompt acoustic tokens and combine with upsampled phonemes.
+        # run decoder on the prompt to initialize the cache.
+        # we increment `prompt_tokens_len` by 1 and `seq_len` since we shift acoustic tokens and add first phoneme
+        prompt_acoustic_tokens = batch["prompt_acoustic_tokens"]
+        prompt_tokens_len = batch["prompt_tokens_len"] + 1
+        batch_size, seq_len, _ = prompt_acoustic_tokens.shape
+        seq_len = seq_len + 1
+        device = prompt_acoustic_tokens.device
+        # Create mask [batch, seq_len]
+        idx = torch.arange(seq_len, device=device).expand(batch_size, seq_len)
+        # Left padding: valid tokens are at the end of the sequence
+        # indices [L-len, ..., L-1] should be 1
+        tokens_mask = (idx >= (seq_len - prompt_tokens_len.unsqueeze(1))).long()
+        # Create position_ids that ignore left padding
+        # valid tokens should start at position 0
+        # mask: 0 0 1 1 -> cumsum: 0 0 1 2 -> sub 1: -1 -1 0 1 -> relu: 0 0 0 1
+        position_ids = tokens_mask.cumsum(dim=1) - 1
+        position_ids.clamp_(min=0)
+        # Embed acoustic tokens
+        # acoustic_tokens shape: [batch, acoustic_seq_len, vocabs_num]
+        # Embed each vocabulary separately and sum
+        # for the input, shift acoustic tokens to the right
+        shifted_prompt_acoustic_tokens = torch.nn.functional.pad(
+            prompt_acoustic_tokens,
+            (0, 0, 1, 0),
+            mode="constant",
+            value=(self.config.dec_vocab_size),
+        )
+        prompt_acoustic_embeds_list = []
         for i, emb in enumerate(self.acoustic_embedding):
-            acoustic_embeds_list.append(emb(acoustic_prompt[:, :, i]))
-        acoustic_embeds = torch.stack(acoustic_embeds_list, dim=2).sum(
-            dim=2
-        )  # [B, prompt_len, dec_dim]
-
-        # Align text embeddings: use corresponding slice
-        current_text_embeds = text_embeddings[:, :prompt_len, :]
-
-        # Combine
-        inputs_embeds = acoustic_embeds + current_text_embeds
-
-        # Forward prompt
+            prompt_acoustic_embeds_list.append(emb(shifted_prompt_acoustic_tokens[:, :, i]))
+        prompt_acoustic_embeds = torch.stack(prompt_acoustic_embeds_list, dim=2).sum(dim=2)
+        # combine prompt acoustic embeddings and upsampled phonemes
+        prompt = prompt_phonemes_up_embeds + prompt_acoustic_embeds
+        # finally run decoder
         outputs = self.decoder.model(
-            inputs_embeds=inputs_embeds,
-            past_key_values=past_key_values,
-            attention_mask=valid_mask[:, :prompt_len],
-            position_ids=position_ids[:, :prompt_len],
+            inputs_embeds=prompt,
+            past_key_values=None,
+            attention_mask=tokens_mask,
+            position_ids=position_ids,
             use_cache=True,
         )
         past_key_values = outputs.past_key_values
         last_hidden = outputs.last_hidden_state[:, -1:, :]  # [B, 1, hidden]
 
-        # 4. Autoregressive loop
-        # We start generating from index `prompt_len` up to `total_len`
-        for i in range(prompt_len, total_len):
-            # Project to logits
+        # 4. AUTOREGRESSIVE STAGE: we generate until all phonemes in all sequences are generated
+        gen_seq_len = [0] * batch_size  # where the generated sequence actually ends
+        encodings_idx_lst = [
+            text_prompt_len
+        ] * batch_size  # index of `encoder_projected` to use for next token prediction
+        encodings_idx = torch.tensor(encodings_idx_lst, device=device, dtype=torch.long)
+        generated_tokens_lst = []
+        # last position ids, we will be incrementing these as we decode
+        position_ids = position_ids[:, -1:]  # b x 1
+        while True:
+            # sample next acoustic token, store it
             logits = self.acoustic_projection(last_hidden)  # [B, 1, num_vocabs * vocab_size]
-            logits = logits.view(
-                batch_size, 1, self.config.dec_vocabs_num, self.config.dec_vocab_size + 1
-            )
+            next_acoustic_token = self.sample_token(logits)  # [B, 1, vocabs_num]
+            generated_tokens_lst.append(next_acoustic_token)
+            # check if we finished generating particular phoneme
+            eop_logits = self.eop_projection(last_hidden).view(-1)  # [B,]
+            eop_flags = (eop_logits > 0.0).long()
+            encodings_idx += eop_flags  # shift encodings indices if predicted so
+            # check if we finished generating particular sequence
+            encodings_idx_lst = encodings_idx.cpu().numpy().tolist()
+            for b, idx in enumerate(encodings_idx_lst):
+                if idx >= text_len:
+                    gen_seq_len[b] = len(generated_tokens_lst)
+            # check if we fininished generating all sequences
+            if all(x > 0 for x in gen_seq_len):
+                break
+            # clamp encoding indices to the text length
+            encodings_idx = encodings_idx.clamp(max=text_len - 1)
 
-            # Sample next token (all codebooks in parallel)
-            next_tokens = []
-            for v in range(self.config.dec_vocabs_num):
-                v_logits = logits[:, 0, v, :]  # batch x vocab_size
-                v_logits = logits_processor(generated[:, :, v], v_logits)
-                probs = F.softmax(v_logits, dim=-1)
-                token = torch.multinomial(probs, num_samples=1)  # [B, 1]
-                next_tokens.append(token)
-
-            next_acoustic_token = torch.cat(next_tokens, dim=1).unsqueeze(1)  # [B, 1, vocabs_num]
-
-            # Append to result
-            generated = torch.cat([generated, next_acoustic_token], dim=1)
-
-            # Prepare input for next step
-            # Next input is: newly generated token + text embedding at current pos `i`
-
-            # Embed new acoustic token
+            # run another decoder step
+            # embed generated acoustic token
             next_acoustic_embeds_list = []
             for v_idx, emb in enumerate(self.acoustic_embedding):
                 next_acoustic_embeds_list.append(emb(next_acoustic_token[:, :, v_idx]))
             next_acoustic_embed = torch.stack(next_acoustic_embeds_list, dim=2).sum(
                 dim=2
             )  # [B, 1, dec_dim]
-
-            # Get corresponding text embedding
-            next_text_embed = text_embeddings[:, i : i + 1, :]  # [B, 1, dec_dim]
-
+            # get text embeddings correspondent to current decoding progress
+            batch_idx = torch.arange(batch_size, device=device)
+            next_text_embed = encoder_projected[batch_idx, encodings_idx].unsqueeze(1)
+            # combine acoustic and text embeddings
             inputs_embeds = next_acoustic_embed + next_text_embed
 
-            # Forward single step
+            # run generation step with decoder
+            # expand mask this step
+            tokens_mask = torch.cat(
+                [tokens_mask, torch.ones_like(tokens_mask[:, -1:])], dim=1
+            )  # batch x seq_len + 1
+            position_ids = position_ids + 1  # increment position ids
             outputs = self.decoder.model(
                 inputs_embeds=inputs_embeds,
                 past_key_values=past_key_values,
-                attention_mask=valid_mask[:, : (i + 1)],
-                position_ids=position_ids[:, i : (i + 1)],
+                attention_mask=tokens_mask,
+                position_ids=position_ids,
                 use_cache=True,
             )
             past_key_values = outputs.past_key_values
             last_hidden = outputs.last_hidden_state
 
-        batch["generated_acoustic_tokens"] = generated[:, prompt_len:, :].transpose(
-            1, 2
-        )  # B x 8 x time
+        # store generated tokens to npz
+        # use `gen_seq_len` to save only valid tokens
+        generated_tokens = torch.cat(generated_tokens_lst, dim=1)  # batch x gen_len x vocabs_num
+        batch["generated_acoustic_tokens"] = generated_tokens.transpose(1, 2)  # B x 8 x time
+        batch["gen_len"] = torch.tensor(gen_seq_len, device=device, dtype=torch.long)
         batch.save_to_npz(
             streams=["generated_acoustic_tokens"],
             out_dir=out_dir,
             seq_axis=[1],
-            actual_lens=["phoneme_len"],
+            actual_lens=["gen_len"],
             rename=["acoustic_tokens"],  # save with standard name
         )
 
@@ -428,14 +503,6 @@ class TTSALMModel(LightningModule):
         loss: torch.Tensor
             Cross entropy loss
         """
-        # Remove the last logit as we don't have a target for it (it predicts T+1)
-        logits = logits[:, :-1, :, :]  # [B, T-1, V_num, V_size]
-        eop_logits = eop_logits[:, :-1, :]  # [B, T-1, 1]
-
-        # Remove the first token from targets as it's the input for the first prediction
-        # Targets are shifted by 1 relative to input
-        targets = acoustic_tokens[:, 1:, :]  # [B, T-1, V_num]
-        eop_flags = eop_flags[:, 1:]  # [B, T-1]
 
         batch_size, seq_len, vocabs_num, vocab_size = logits.shape
         valid_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=logits.device)
@@ -448,12 +515,12 @@ class TTSALMModel(LightningModule):
             # We mask everything from 0 up to prompt end.
             padding_len = seq_len - sequence_lens[i]
             mask_end = padding_len + prompt_len[i]
-            targets[i, :mask_end, :] = -1
+            acoustic_tokens[i, :mask_end, :] = -1
             valid_mask[i, mask_end:] = True
 
         # Flatten for loss computation
         logits_flat = logits.reshape(-1, vocab_size)
-        targets_flat = targets.reshape(-1).long()
+        targets_flat = acoustic_tokens.reshape(-1).long()
         loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-1)
 
         valid_mask_flat = valid_mask.reshape(-1)

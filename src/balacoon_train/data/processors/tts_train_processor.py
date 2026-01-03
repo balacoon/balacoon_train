@@ -8,7 +8,7 @@ and preparing data for text-to-speech training
 import logging
 import zipfile
 from dataclasses import dataclass
-from typing import cast
+from typing import cast, Optional
 import os
 import json
 
@@ -34,6 +34,64 @@ class TTSTrainProcessor(Processor):
                 f"Phoneme mapping file not found: {self._config.phoneme_mapping}"
             )
         self._phoneme_mapping = json.load(open(self._config.phoneme_mapping))
+
+    def encode_phonemes(self, phonemes_str) -> torch.Tensor:
+        return torch.tensor(
+            [self._phoneme_mapping.get(p, 0) for p in phonemes_str], dtype=torch.int32
+        )
+
+    def create_alignment(
+        self,
+        acoustic_tokens: torch.Tensor,
+        phonemes: torch.Tensor,
+        starts: torch.Tensor,
+        ends: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool]:
+        """
+        Helper function that processes starts and ends of phonemes, creating an alignment between
+        phonemes and acoustic tokens.
+        """
+        assert starts.shape == ends.shape
+
+        if round(starts[0].item()) != 0:
+            # first phoneme does not start with 0, need to prepend artificial silence
+            starts = torch.cat([torch.tensor([0.0]), starts])
+            ends = torch.cat([torch.tensor([starts[1]]), ends])
+            phonemes = torch.cat([torch.tensor([0]), phonemes])
+
+        # compute how many frames each phoneme is.
+        end_frames = torch.round(ends * FRAME_RATE).int()
+        frame_durations = torch.diff(end_frames, prepend=torch.tensor([0]))
+        total_duration = torch.sum(frame_durations).item()
+
+        diff = abs(total_duration - acoustic_tokens.shape[0])
+        is_valid = True
+        if diff > 2:
+            logging.warning(
+                f"Total duration of phonemes {total_duration} does not match acoustic tokens {acoustic_tokens.shape[0]}"
+            )
+            is_valid = False
+
+        if total_duration > acoustic_tokens.shape[0] and diff - 1 > frame_durations[-1].item():
+            logging.warning(
+                f"Duration mismatch {diff} can't be compensated by last phoneme {frame_durations[-1].item()}"
+            )
+            is_valid = False
+
+        if total_duration > acoustic_tokens.shape[0]:
+            # reduce duration of the last phoneme
+            frame_durations[-1] -= diff
+        elif total_duration < acoustic_tokens.shape[0]:
+            # drop some frames from acoustic tokens
+            acoustic_tokens = acoustic_tokens[:total_duration]
+
+        # convert frame durations into phoneme indices that are used by torch.gather
+        # e.g. frame_durations = [1, 2, 1, 3] -> phoneme_indices = [0, 1, 1, 2, 3, 3, 3]
+        phoneme_indices = torch.repeat_interleave(
+            torch.arange(len(frame_durations)), frame_durations
+        )
+        assert phoneme_indices.shape[0] == acoustic_tokens.shape[0]
+        return acoustic_tokens, phonemes, phoneme_indices, is_valid
 
     def process(self, container: Container, validate: bool = False) -> bool:
         """
@@ -64,53 +122,15 @@ class TTSTrainProcessor(Processor):
                     logging.warning(f"Phoneme {p} not found in phoneme mapping")
                     return False
 
-        phonemes = torch.tensor(
-            [self._phoneme_mapping.get(p, 0) for p in phonemes_str], dtype=torch.int32
-        )
+        phonemes = self.encode_phonemes(phonemes_str)
         starts = container[self._config.phonemes_start_name]  # num_phonemes
         ends = container[self._config.phonemes_end_name]  # num_phonemes
-        assert starts.shape == ends.shape
 
-        if round(starts[0].item()) != 0:
-            # first phoneme does not start with 0, need to prepend artificial silence
-            starts = torch.cat([torch.tensor([0.0]), starts])
-            ends = torch.cat([torch.tensor([starts[1]]), ends])
-            phonemes = torch.cat([torch.tensor([0]), phonemes])
-
-        # compute how many frames each phoneme is.
-        end_frames = torch.round(ends * FRAME_RATE).int()
-        frame_durations = torch.diff(end_frames, prepend=torch.tensor([0]))
-        total_duration = torch.sum(frame_durations).item()
-
-        diff = abs(total_duration - acoustic_tokens.shape[0])
-        if validate:
-            if diff > 2:
-                logging.warning(
-                    f"Total duration of phonemes {total_duration} does not match acoustic tokens {acoustic_tokens.shape[0]}"
-                )
-                return False
-
-            if total_duration > acoustic_tokens.shape[0] and diff - 1 > frame_durations[-1].item():
-                logging.warning(
-                    f"Duration mismatch {diff} can't be compensated by last phoneme {frame_durations[-1].item()}"
-                )
-                return False
-            # dont go any further during validation
-            return True
-
-        if total_duration > acoustic_tokens.shape[0]:
-            # reduce duration of the last phoneme
-            frame_durations[-1] -= diff
-        elif total_duration < acoustic_tokens.shape[0]:
-            # drop some frames from acoustic tokens
-            acoustic_tokens = acoustic_tokens[:total_duration]
-
-        # convert frame durations into phoneme indices that are used by torch.gather
-        # e.g. frame_durations = [1, 2, 1, 3] -> phoneme_indices = [0, 1, 1, 2, 3, 3, 3]
-        phoneme_indices = torch.repeat_interleave(
-            torch.arange(len(frame_durations)), frame_durations
+        acoustic_tokens, phonemes, phoneme_indices, is_valid = self.create_alignment(
+            acoustic_tokens, phonemes, starts, ends
         )
-        assert phoneme_indices.shape[0] == acoustic_tokens.shape[0]
+        if validate:
+            return is_valid
 
         # finally create a target for end-of-phoneme prediction
         # it's a binary flag that is 1 at the end of each phoneme
@@ -129,25 +149,35 @@ class TTSTrainProcessor(Processor):
         container[self._config.phonemes_flag_name] = end_of_phoneme
         return True
 
-    def collate(self, batch_elements: list[Container], batch: Container):
+    def collate_prompt(
+        self,
+        batch_elements: list[Container],
+        acoustic_tokens_name: str,
+        phonemes_name: str,
+        phoneme_indices_name: str,
+        phonemes_flag_name: Optional[str] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        aligned collation of phonemes, acoustic tokens and their alignment.
-        we collate acoustic tokens, then add SIL phoneme at the beginning and alter alignment
+        a helper function that aligns indices, acoustic tokens and phonemes of the prompt.
+        collation happens with padding on the left.
+        function returns:
+            - batched acoustic tokens
+            - batched phonemes
+            - batch phoneme indices (for upsampling)
+            - batched end-of-phoneme flags
+            - tokens length - actual sequence length of each batch element in frames
+            - phonemes length - actual sequence length of each batch element in phonemes
         """
-
-        acoustic_tokens_lst = [
-            element[self._config.acoustic_tokens_name] for element in batch_elements
-        ]
+        acoustic_tokens_lst = [element[acoustic_tokens_name] for element in batch_elements]
         batched_acoustic_tokens, tokens_len = self.pad_and_stack(
             acoustic_tokens_lst, axis=0, val=self._config.pad_value, on_right=False
         )
-        batch[self._config.acoustic_tokens_name] = batched_acoustic_tokens
-        batch["tokens_len"] = tokens_len
 
         # now check how phonemes and alignment should be adjusted according to padding of acoustic tokens
-        phonemes_lst = [element[self._config.phonemes_name] for element in batch_elements]
-        indices_lst = [element[self._config.name] for element in batch_elements]
-        eop_lst = [element[self._config.phonemes_flag_name] for element in batch_elements]
+        phonemes_lst = [element[phonemes_name] for element in batch_elements]
+        indices_lst = [element[phoneme_indices_name] for element in batch_elements]
+        if phonemes_flag_name is not None:
+            eop_lst = [element[phonemes_flag_name] for element in batch_elements]
         max_frames = torch.max(tokens_len).item()
 
         phonemes_padding = torch.zeros(len(batch_elements), dtype=torch.int32)
@@ -166,7 +196,8 @@ class TTSTrainProcessor(Processor):
                 padding = [0] * diff
                 indices_lst[i] = torch.cat([torch.tensor(padding), indices])
                 padding[-1] = 1
-                eop_lst[i] = torch.cat([torch.tensor(padding), eop_lst[i]])
+                if phonemes_flag_name is not None:
+                    eop_lst[i] = torch.cat([torch.tensor(padding), eop_lst[i]])
 
         # now we need pad and stack phonemes, since the sequence length is different here
         batched_phonemes, phonemes_len = self.pad_and_stack(
@@ -181,13 +212,54 @@ class TTSTrainProcessor(Processor):
                 diff = max_phonemes - num_phonemes
                 indices_lst[i] += diff
 
-        batch[self._config.phonemes_name] = batched_phonemes
-        phonemes_len -= phonemes_padding  # if phoneme was added, it will be masked
-        batch["phonemes_len"] = phonemes_len
+        # if phoneme was added, it will be masked
+        phonemes_len -= phonemes_padding
 
         # finally simply stack indices and eop, since they are already padded to have same shape
-        batch[self._config.name] = torch.stack(indices_lst)  # batch x max_frames
-        batch[self._config.phonemes_flag_name] = torch.stack(eop_lst)  # batch x max_frames
+        batched_phoneme_indices = torch.stack(indices_lst)  # batch x max_frames
+        batched_eop = None
+        if phonemes_flag_name is not None:
+            batched_eop = torch.stack(eop_lst)  # batch x max_frames
+
+        return (
+            batched_acoustic_tokens,
+            batched_phonemes,
+            batched_phoneme_indices,
+            batched_eop,
+            tokens_len,
+            phonemes_len,
+        )
+
+    def collate(self, batch_elements: list[Container], batch: Container):
+        """
+        aligned collation of phonemes, acoustic tokens and their alignment.
+        we collate acoustic tokens, then add SIL phoneme at the beginning and alter alignment
+        """
+
+        (
+            batched_acoustic_tokens,
+            batched_phonemes,
+            batched_phoneme_indices,
+            batched_eop,
+            tokens_len,
+            phonemes_len,
+        ) = self.collate_prompt(
+            batch_elements,
+            self._config.acoustic_tokens_name,
+            self._config.phonemes_name,
+            self._config.name,
+            self._config.phonemes_flag_name,
+        )
+
+        # put everything to the container
+        batch[self._config.acoustic_tokens_name] = batched_acoustic_tokens
+        batch["tokens_len"] = tokens_len
+
+        batch[self._config.phonemes_name] = batched_phonemes
+        batch["phonemes_len"] = phonemes_len
+
+        batch[self._config.name] = batched_phoneme_indices  # batch x max_frames
+        batch[self._config.phonemes_flag_name] = batched_eop  # batch x max_frames
 
         # last thing that needs to be done - create a prompt_len,
         # which specifies how much to mask during loss computation.

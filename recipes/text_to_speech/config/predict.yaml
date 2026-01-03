@@ -1,64 +1,78 @@
-
+max_seq_len: 768
 acoustic_vocab_size: 2024
 phoneme_vocab_size: 47  # comes from phoneme mapping
-
 data:
   locations:
-    train_txt: "???"
-    dev_txt: ""
+    test_txt: "???"
     phoneme_mapping: "???"
+    id_mapping: "???"
     acoustic_tokens_dir: ["???"]
     phoneme_dir: ["???"]
   dataset:
     loaders:
       - cls: "balacoon_train.data.loaders.npz_loader.NpzLoader"
         locations: ${data.locations.acoustic_tokens_dir}
-        name: "acoustic_tokens_npz"
+        name: "prompt_acoustic_tokens_npz"
+        id_mapping: ${data.locations.id_mapping}
+
+      - cls: "balacoon_train.data.loaders.npz_loader.NpzLoader"
+        locations: ${data.locations.phoneme_dir}
+        name: "prompt_phoneme_npz"
+        id_mapping: ${data.locations.id_mapping}
       - cls: "balacoon_train.data.loaders.npz_loader.NpzLoader"
         locations: ${data.locations.phoneme_dir}
         name: "phoneme_npz"
+
     processors:
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
-        name: "acoustic_tokens"
-        loader: "acoustic_tokens_npz"
+        name: "prompt_acoustic_tokens"
+        npz_name: "acoustic_tokens"
+        loader: "prompt_acoustic_tokens_npz"
         type: "int32"
         transpose: true
         to_collate: false
+        max_len: ${max_seq_len}
+        min_len: 64
         mock: false
-        max_len: 768   
-        min_len: 96
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "prompt_phonemes"
+        npz_name: "phonemes"
+        to_collate: false
+        loader: "prompt_phoneme_npz"
+        torch: false
+        mock: false
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "prompt_starts"
+        npz_name: "starts"
+        to_collate: false
+        loader: "prompt_phoneme_npz"
+        type: "float32"
+        mock: false
+      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
+        name: "prompt_ends"
+        npz_name: "ends"
+        to_collate: false
+        loader: "prompt_phoneme_npz"
+        type: "float32"
+        mock: false
       - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
         name: "phonemes"
         to_collate: false
         loader: "phoneme_npz"
         torch: false
         mock: false
-      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
-        name: "starts"
-        to_collate: false
-        loader: "phoneme_npz"
-        type: "float32"
-        mock: false
-      - cls: "balacoon_train.data.processors.npz_stream_processor.NpzStreamProcessor"
-        name: "ends"
-        to_collate: false
-        loader: "phoneme_npz"
-        type: "float32"
-        mock: false
-      - cls: "balacoon_train.data.processors.tts_train_processor.TTSTrainProcessor"
+      - cls: "balacoon_train.data.processors.tts_pred_processor.TTSPredProcessor"
         phoneme_mapping: ${data.locations.phoneme_mapping}
         pad_value: ${acoustic_vocab_size}
 
   seq_len:
     cls: "balacoon_train.data.seq_len_readers.npz_shape_reader.NpzShapeReader"
-    locations: ${data.locations.acoustic_tokens_dir}
-    stream: "acoustic_tokens"
-    axis: 1
-  batch_size: 4
-  num_workers: 8
+    locations: ${data.locations.phoneme_dir}
+    stream: "phonemes"
+    axis: 0
+  batch_size: 1
+  num_workers: 1
 
 model:
   cls: "balacoon_train.tts_alm.TTSALMModel"
-  phonemes_num: ${phoneme_vocab_size}
-  dec_vocab_size: ${acoustic_vocab_size}
-  num_steps: 500000  # 10 epochs for libritts
+  max_position_embeddings: ${max_seq_len}
