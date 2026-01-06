@@ -4,6 +4,7 @@ Copyright 2025 Balacoon
 Llama-based acoustic token prediction.
 """
 
+import time
 from typing import Any, Dict, Optional, Tuple, cast
 from dataclasses import dataclass
 
@@ -408,6 +409,7 @@ class TTSALMModel(LightningModule):
         generated_tokens_lst = []
         # last position ids, we will be incrementing these as we decode
         position_ids = position_ids[:, -1:]  # b x 1
+        start_time = time.time()
         while True:
             # sample next acoustic token, store it
             logits = self.acoustic_projection(last_hidden)  # [B, 1, num_vocabs * vocab_size]
@@ -418,10 +420,15 @@ class TTSALMModel(LightningModule):
             eop_flags = (eop_logits > 0.0).long()
             encodings_idx += eop_flags  # shift encodings indices if predicted so
             # check if we finished generating particular sequence
+            if time.time() - start_time > 60:
+                # processing batch for more than 60 seconds
+                print(f"Processing batch for more than 60 seconds: {str(encodings_idx)}", flush=True)
+                break
             encodings_idx_lst = encodings_idx.cpu().numpy().tolist()
             for b, idx in enumerate(encodings_idx_lst):
-                if idx >= text_len:
-                    gen_seq_len[b] = len(generated_tokens_lst)
+                if idx >= text_len or idx >= self.config.max_position_embeddings:
+                    if gen_seq_len[b] == 0:
+                        gen_seq_len[b] = len(generated_tokens_lst)
             # check if we fininished generating all sequences
             if all(x > 0 for x in gen_seq_len):
                 break
